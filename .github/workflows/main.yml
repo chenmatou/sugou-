@@ -1,11 +1,11 @@
 name: Deploy Quote Tool
 
-# 触发条件：当 main 分支有代码推送时触发
+# 触发机制：推送到 main 分支时自动运行
 on:
   push:
     branches:
       - main
-  workflow_dispatch: # 允许手动点击按钮触发
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -17,20 +17,21 @@ jobs:
       - name: Checkout code (拉取代码)
         uses: actions/checkout@v3
 
-      - name: Set up Python (安装Python环境)
+      - name: Set up Python (设置Python环境)
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
-      - name: Install dependencies (安装依赖)
+      # 👇👇👇 关键修改：直接安装，不再读取 txt 文件，防止报错 👇👇👇
+      - name: Install dependencies (安装依赖库)
         run: |
-          pip install -r requirements.txt
+          pip install pandas openpyxl
 
-      - name: Run Generator (运行生成脚本)
+      - name: Run Generator (执行生成脚本)
         run: |
           python generate.py
 
-      - name: Deploy to GitHub Pages (发布网页)
+      - name: Deploy to GitHub Pages (发布到网页)
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
