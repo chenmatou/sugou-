@@ -17,9 +17,10 @@ TIER_FILES = {
     "T0": "T0.xlsx", "T1": "T1.xlsx", "T2": "T2.xlsx", "T3": "T3.xlsx"
 }
 
-# 渠道Sheet关键词映射 (用于模糊匹配 Excel Sheet)
+# 渠道 Sheet 匹配关键词 (精准匹配)
+# 逻辑：Sheet名必须包含列表中的【所有】关键词
 CHANNEL_KEYWORDS = {
-    "GOFO-报价": ["GOFO", "报价"],  # 需同时包含
+    "GOFO-报价": ["GOFO", "报价"],
     "GOFO-MT-报价": ["GOFO", "MT"],
     "UNIUNI-MT-报价": ["UNIUNI"],
     "USPS-YSD-报价": ["USPS"],
@@ -27,7 +28,7 @@ CHANNEL_KEYWORDS = {
     "XLmiles-报价": ["XLmiles"],
     "GOFO大件-GRO-报价": ["GOFO", "大件"],
     "FedEx-632-MT-报价": ["632"],
-    "FedEx-YSD-报价": ["YSD"]
+    "FedEx-YSD-报价": ["FedEx", "YSD"]  # 修复点：增加 FedEx 前缀，防止匹配到 USPS
 }
 
 # 邮编库配置
@@ -38,8 +39,9 @@ ZIP_COL_MAP = {
     "FedEx-632-MT-报价": 12, "FedEx-YSD-报价": 13
 }
 
-# 默认附加费 (兜底用)
+# 默认附加费 (修复了 fuel 缺失)
 GLOBAL_SURCHARGES = {
+    "fuel": 0.16,          # 修复点：补回此键，防止 KeyError
     "res_fee": 3.50, 
     "peak_res": 1.32,
     "peak_oversize": 54, 
@@ -65,7 +67,7 @@ US_STATES_CN = {
 }
 
 # ==========================================
-# 2. 网页模板 (集成高级逻辑)
+# 2. 网页模板
 # ==========================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -73,7 +75,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>业务员报价助手 (Expert V7)</title>
+    <title>业务员报价助手 (Ultimate V8)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         :root { --primary-color: #0d6efd; --header-bg: #000; }
@@ -85,12 +87,10 @@ HTML_TEMPLATE = """
         .form-label { font-weight: 600; font-size: 0.85rem; color: #555; margin-bottom: 4px; }
         .input-group-text { font-size: 0.85rem; font-weight: 600; background-color: #e9ecef; }
         .form-control, .form-select { font-size: 0.9rem; }
-        
         .status-table { width: 100%; font-size: 0.85rem; }
         .status-table td { padding: 6px; border-bottom: 1px solid #eee; vertical-align: middle; }
         .indicator { display: inline-block; padding: 2px 8px; border-radius: 4px; color: #fff; font-weight: bold; font-size: 0.75rem; }
         .bg-ok { background-color: #198754; } .bg-warn { background-color: #ffc107; color:#000; } .bg-err { background-color: #dc3545; }
-        
         .result-table th { background-color: #212529; color: #fff; text-align: center; font-size: 0.85rem; vertical-align: middle; }
         .result-table td { text-align: center; vertical-align: middle; font-size: 0.9rem; }
         .price-text { font-weight: 800; font-size: 1.1rem; color: #0d6efd; }
@@ -107,7 +107,7 @@ HTML_TEMPLATE = """
 
 <header>
     <div class="container d-flex justify-content-between align-items-center">
-        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 专家版 (V7.0)</small></div>
+        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 专家版 (V8.0)</small></div>
         <div class="text-end text-white small">Multi-Channel Compliance Check</div>
     </div>
 </header>
@@ -178,7 +178,7 @@ HTML_TEMPLATE = """
                                 <div class="col-12"><select class="form-select form-select-sm" id="dimUnit"><option value="in">IN (英寸)</option><option value="cm">CM (厘米)</option><option value="mm">MM (毫米)</option></select></div>
                             </div>
                             <div class="row g-2 mt-2">
-                                <div class="col-8"><div class="input-group input-group-sm"><span class="input-group-text">重量</span><input type="number" class="form-control" id="weight" placeholder="Weight"></div></div>
+                                <div class="col-8"><div class="input-group input-group-sm"><span class="input-group-text">重量</span><input type="number" class="form-control" id="weight" placeholder="实重"></div></div>
                                 <div class="col-4"><select class="form-select form-select-sm" id="weightUnit"><option value="lb">LB (磅)</option><option value="oz">OZ (盎司)</option><option value="kg">KG (千克)</option><option value="g">G (克)</option></select></div>
                             </div>
                         </div>
@@ -226,7 +226,6 @@ HTML_TEMPLATE = """
                         2. <strong>FedEx ECO-MT</strong>：超长/超重/超大 三费取最大值 (Max-of-3)。<br>
                         3. <strong>USPS</strong>：无燃油/住宅费。体积重>1728 in³ 时除以166。<br>
                         4. <strong>UniUni</strong>：实重计费，无燃油/住宅费。<br>
-                        5. <strong>分区显示</strong>：Zone 1 ~ Zone 9 完整显示。
                     </div>
                 </div>
             </div>
@@ -247,7 +246,7 @@ HTML_TEMPLATE = """
     document.getElementById('updateDate').innerText = new Date().toLocaleDateString();
 
     // ===================================
-    // 核心业务配置 (Expert Logic V7)
+    // 核心业务配置 (Expert Logic V8)
     // ===================================
     
     const USPS_BLOCK = ['006','007','008','009','090','091','092','093','094','095','096','097','098','099','340','962','963','964','965','966','967','968','969','995','996','997','998','999'];
@@ -261,13 +260,13 @@ HTML_TEMPLATE = """
     };
 
     const RULES = {
-        // 燃油费判断: 免收列表
+        // 燃油费判断
         hasFuel: n => {
             let u = n.toUpperCase();
             if(u.includes('GOFO-报价') || u.includes('GOFO-MT') || u.includes('ECO-MT') || u.includes('XLMILES') || u.includes('UNIUNI')) return false;
             return true;
         },
-        // 住宅费判断: 仅 FedEx 开头且非 ECO 收取 (XLmiles一口价)
+        // 住宅费判断
         hasResFee: n => {
             let u = n.toUpperCase();
             return (u.includes('FEDEX') && !u.includes('ECO-MT')); 
@@ -275,10 +274,10 @@ HTML_TEMPLATE = """
         // 计费重除数
         getDivisor: (n, vol) => {
             let u = n.toUpperCase();
-            if(u.includes('UNIUNI')) return 0; // 无体积重
-            if(u.includes('USPS')) return vol > 1728 ? 166 : 0; // >1728才计抛
+            if(u.includes('UNIUNI')) return 0; 
+            if(u.includes('USPS')) return vol > 1728 ? 166 : 0;
             if(u.includes('ECO-MT')) return vol < 1728 ? 400 : 250;
-            return 222; // 默认
+            return 222; 
         }
     };
 
@@ -296,7 +295,7 @@ HTML_TEMPLATE = """
         return {L,W,H,Wt:Weight};
     }
 
-    // 全渠道实时检测模块 (Issue 4)
+    // 全渠道实时检测模块
     function check(pkg) {
         let d=[pkg.L, pkg.W, pkg.H].sort((a,b)=>b-a);
         let L=d[0], G=L+2*(d[1]+d[2]);
@@ -518,7 +517,7 @@ def get_sheet_by_name(excel_file, target_keys):
         xl = pd.ExcelFile(excel_file, engine='openpyxl')
         for sheet in xl.sheet_names:
             s_name = sheet.upper().replace(" ", "")
-            # 关键词匹配：所有关键词都必须存在
+            # 关键词匹配
             if all(k.upper() in s_name for k in target_keys):
                 print(f"    > 匹配Sheet: {sheet}")
                 return pd.read_excel(xl, sheet_name=sheet, header=None)
@@ -617,6 +616,8 @@ if __name__ == '__main__':
     print("\n--- 3. 生成网页 ---")
     try: js_str = json.dumps(final, allow_nan=False)
     except: js_str = json.dumps(final).replace("NaN", "0")
+    
     html = HTML_TEMPLATE.replace('__JSON_DATA__', js_str).replace('__FUEL__', str(GLOBAL_SURCHARGES['fuel']*100))
+    
     with open(os.path.join(OUTPUT_DIR, "index.html"), "w", encoding="utf-8") as f: f.write(html)
     print("✅ 完成！")
