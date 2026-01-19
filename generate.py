@@ -23,11 +23,11 @@ CHANNEL_KEYWORDS = {
     "GOFO-MT-报价": ["GOFO", "MT"],
     "UNIUNI-MT-报价": ["UNIUNI"],
     "USPS-YSD-报价": ["USPS"],
-    "FedEx-ECO-MT报价": ["ECO", "MT"], # 此渠道不收燃油
+    "FedEx-ECO-MT报价": ["ECO", "MT"], 
     "XLmiles-报价": ["XLmiles"],
     "GOFO大件-GRO-报价": ["GOFO", "大件"],
     "FedEx-632-MT-报价": ["632"],
-    "FedEx-YSD-报价": ["FedEx", "YSD"] # 必须同时包含
+    "FedEx-YSD-报价": ["FedEx", "YSD"] 
 }
 
 # 邮编库配置
@@ -62,7 +62,7 @@ US_STATES_CN = {
 }
 
 # ==========================================
-# 2. 网页模板 (集成V9逻辑)
+# 2. 网页模板 (集成V10逻辑)
 # ==========================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -70,7 +70,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>报价计算器 (Expert V9)</title>
+    <title>报价计算器 (Expert V10)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         :root { --primary-color: #0d6efd; --header-bg: #000; }
@@ -103,8 +103,8 @@ HTML_TEMPLATE = """
 
 <header>
     <div class="container d-flex justify-content-between align-items-center">
-        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 专家版 (Fix V9)</small></div>
-        <div class="text-end text-white small">Strict Policy V9.0</div>
+        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 专家版 (Fix V10)</small></div>
+        <div class="text-end text-white small">Auto-Calc Enabled</div>
     </div>
 </header>
 
@@ -120,7 +120,7 @@ HTML_TEMPLATE = """
                             <div class="row g-2">
                                 <div class="col-6 border-end">
                                     <label class="form-label small">FedEx/USPS (%)</label>
-                                    <input type="number" class="form-control form-control-sm" id="genFuel" value="16.0">
+                                    <input type="number" class="form-control form-control-sm" id="fedexFuel" value="16.0">
                                     <a href="https://www.fedex.com.cn/en-us/shipping/historical-fuel-surcharge.html" target="_blank" class="fuel-link">🔗 FedEx燃油官网</a>
                                 </div>
                                 <div class="col-6">
@@ -132,12 +132,12 @@ HTML_TEMPLATE = """
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label">客户等级</label>
+                            <label class="form-label">客户等级 (切换自动计算)</label>
                             <div class="btn-group w-100" role="group">
-                                <input type="radio" class="btn-check" name="tier" id="t0" value="T0"><label class="btn btn-outline-secondary" for="t0">T0</label>
-                                <input type="radio" class="btn-check" name="tier" id="t1" value="T1"><label class="btn btn-outline-secondary" for="t1">T1</label>
-                                <input type="radio" class="btn-check" name="tier" id="t2" value="T2"><label class="btn btn-outline-secondary" for="t2">T2</label>
-                                <input type="radio" class="btn-check" name="tier" id="t3" value="T3" checked><label class="btn btn-outline-secondary" for="t3">T3</label>
+                                <input type="radio" class="btn-check tier-radio" name="tier" id="t0" value="T0"><label class="btn btn-outline-secondary" for="t0">T0</label>
+                                <input type="radio" class="btn-check tier-radio" name="tier" id="t1" value="T1"><label class="btn btn-outline-secondary" for="t1">T1</label>
+                                <input type="radio" class="btn-check tier-radio" name="tier" id="t2" value="T2"><label class="btn btn-outline-secondary" for="t2">T2</label>
+                                <input type="radio" class="btn-check tier-radio" name="tier" id="t3" value="T3" checked><label class="btn btn-outline-secondary" for="t3">T3</label>
                             </div>
                         </div>
 
@@ -166,7 +166,7 @@ HTML_TEMPLATE = """
                         <hr>
 
                         <div class="mb-3">
-                            <label class="form-label">包裹规格 (原始单位)</label>
+                            <label class="form-label">包裹规格 (中文/原始单位)</label>
                             <div class="row g-2">
                                 <div class="col-4"><div class="input-group input-group-sm"><span class="input-group-text">长</span><input type="number" class="form-control" id="length" placeholder="L"></div></div>
                                 <div class="col-4"><div class="input-group input-group-sm"><span class="input-group-text">宽</span><input type="number" class="form-control" id="width" placeholder="W"></div></div>
@@ -219,8 +219,8 @@ HTML_TEMPLATE = """
                     <div class="mt-2 text-muted small border-top pt-2">
                         <strong>计费逻辑说明：</strong><br>
                         1. <strong>GOFO大件</strong>：独立燃油率，公式: (运费+杂费)*(1+燃油)。<br>
-                        2. <strong>FedEx ECO-MT</strong>：不收燃油；超长/超重/超大 三项取最大值 (Max-of-3)。<br>
-                        3. <strong>USPS</strong>：收燃油(V9更正)；无住宅费；体积重>1728 in³ 时除以166。<br>
+                        2. <strong>FedEx ECO-MT</strong>：超长/超重/超大 三项取最大值 (Max-of-Three)。<br>
+                        3. <strong>USPS</strong>：无燃油/住宅费。体积重>1728 in³ 时除以166。<br>
                         4. <strong>UniUni</strong>：实重计费，无燃油/住宅费。<br>
                     </div>
                 </div>
@@ -232,7 +232,6 @@ HTML_TEMPLATE = """
 <footer><div class="container"><p>&copy; 2026 速狗海外仓 | Update: <span id="updateDate"></span></p></div></footer>
 
 <script>
-    // 错误捕获
     window.onerror = function(msg, u, l) { 
         document.getElementById('globalError').style.display='block'; 
         document.getElementById('errorMsg').innerText=`${msg} (Line ${l})`; 
@@ -248,7 +247,7 @@ HTML_TEMPLATE = """
     document.getElementById('updateDate').innerText = new Date().toLocaleDateString();
 
     // ===================================
-    // V9 核心业务配置 (Expert Logic)
+    // V10 核心业务配置 (Expert Logic)
     // ===================================
     
     const USPS_BLOCK = ['006','007','008','009','090','091','092','093','094','095','096','097','098','099','340','962','963','964','965','966','967','968','969','995','996','997','998','999'];
@@ -332,6 +331,15 @@ HTML_TEMPLATE = """
         })
     });
 
+    // 自动重新计算 (V10 新功能)
+    document.querySelectorAll('.tier-radio').forEach(el => {
+        el.addEventListener('change', () => {
+            if(document.getElementById('weight').value) {
+                document.getElementById('btnCalc').click();
+            }
+        });
+    });
+
     document.getElementById('btnLookup').onclick = () => {
         let z = document.getElementById('zipCode').value.trim();
         let d = document.getElementById('locInfo');
@@ -353,8 +361,8 @@ HTML_TEMPLATE = """
         let isPeak = document.getElementById('peakToggle').checked;
         let isRes = document.getElementById('addressType').value === 'res';
         
-        // 双燃油
-        let genFuel = parseFloat(document.getElementById('genFuel').value)/100;
+        // 燃油费率获取
+        let fedexFuel = parseFloat(document.getElementById('fedexFuel').value)/100;
         let gofoFuel = parseFloat(document.getElementById('gofoFuel').value)/100;
 
         document.getElementById('tierBadge').innerText = tier;
@@ -368,6 +376,7 @@ HTML_TEMPLATE = """
 
         Object.keys(DATA.tiers[tier]).forEach(ch => {
             let prices = DATA.tiers[tier][ch].prices;
+            // 修复：如果该渠道没有价格数据，跳过不报错
             if(!prices || prices.length===0) return;
 
             let zoneVal = CUR_ZONES[ch] || '-';
@@ -387,7 +396,9 @@ HTML_TEMPLATE = """
             // 2. 匹配价格
             let zKey = zoneVal==='1'?'2':zoneVal;
             let row = null;
-            for(let r of prices) { if(r.w >= cWt-0.001) { row=r; break; } }
+            // 修复: 确保重量是数字
+            let searchWt = parseFloat(cWt) || 0;
+            for(let r of prices) { if(r.w >= searchWt - 0.001) { row=r; break; } }
 
             if(!row || zoneVal==='-') { st="无分区/超重"; cls="text-muted"; bg="table-light"; }
             else {
@@ -467,16 +478,16 @@ HTML_TEMPLATE = """
                     fees.p = p;
                 }
 
-                // 燃油费 (V9 重点修复)
+                // 燃油费 (GOFO大件特殊公式)
                 if(uCh.includes('GOFO大件')) {
-                    // 公式: (运费+杂费) * (1+燃油) -> 燃油部分 = (运费+杂费)*燃油率
+                    // 公式: (运费+所有附加费) * (1+燃油) - (运费+所有附加费) = 燃油部分
                     let subTotal = base + fees.r + fees.p + fees.o;
                     fees.f = subTotal * gofoFuel; 
                     details.push(`燃油(${gofoFuel*100}%):$${fees.f.toFixed(2)}`);
                 } else if(RULES.hasFuel(ch)) {
                     // 常规: 运费 * 燃油
-                    fees.f = base * genFuel;
-                    details.push(`燃油(${genFuel*100}%):$${fees.f.toFixed(2)}`);
+                    fees.f = base * fedexFuel;
+                    details.push(`燃油(${fedexFuel*100}%):$${fees.f.toFixed(2)}`);
                 }
             }
 
@@ -484,7 +495,7 @@ HTML_TEMPLATE = """
 
             tbody.innerHTML += `<tr class="${bg}">
                 <td class="fw-bold text-start text-nowrap">${ch}</td>
-                <td><span class="badge-zone">Z${zoneVal}</span></td>
+                <td><span class="badge-zone">Zone ${zoneVal}</span></td>
                 <td>${cWt.toFixed(2)}</td>
                 <td class="fw-bold">${base.toFixed(2)}</td>
                 <td class="text-start small" style="line-height:1.2">${details.join('<br>')||'-'}</td>
@@ -527,6 +538,7 @@ def load_zip_db():
     path = os.path.join(DATA_DIR, TIER_FILES['T0'])
     if not os.path.exists(path): return {}
     
+    # 特殊匹配 GOFO 报价表
     df = get_sheet_by_name(path, ["GOFO", "报价"])
     if df is None: return {}
 
@@ -612,7 +624,6 @@ if __name__ == '__main__':
     try: js_str = json.dumps(final, allow_nan=False)
     except: js_str = json.dumps(final).replace("NaN", "0")
     
-    # 修复 KeyError 的关键行
     html = HTML_TEMPLATE.replace('__JSON_DATA__', js_str).replace('__FUEL__', str(GLOBAL_SURCHARGES['fuel']*100))
     
     with open(os.path.join(OUTPUT_DIR, "index.html"), "w", encoding="utf-8") as f: f.write(html)
