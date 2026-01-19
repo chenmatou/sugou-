@@ -3,17 +3,18 @@ import json
 import re
 import os
 import warnings
+import math
 
 # 忽略 Excel 样式警告
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 # ==========================================
-# 1. 全局配置 (绝对置顶)
+# 1. 全局配置
 # ==========================================
 DATA_DIR = "data"
 OUTPUT_DIR = "public"
 
-# Excel 文件名对应
+# Excel 文件名
 TIER_FILES = {
     "T0": "T0.xlsx", 
     "T1": "T1.xlsx", 
@@ -21,7 +22,7 @@ TIER_FILES = {
     "T3": "T3.xlsx"
 }
 
-# 渠道 Sheet 映射
+# 渠道映射 (Excel Sheet名 -> 代码Key)
 CHANNEL_SHEET_MAP = {
     "GOFO-报价": "GOFO-报价",
     "GOFO-MT-报价": "GOFO-MT-报价",
@@ -42,14 +43,14 @@ ZIP_COL_MAP = {
     "FedEx-632-MT-报价": 12, "FedEx-YSD-报价": 13
 }
 
-# 附加费配置
+# 附加费
 GLOBAL_SURCHARGES = {
     "fuel": 0.16, "res_fee": 3.50, "peak_res": 1.32,
     "peak_oversize": 54, "peak_unauthorized": 220,
     "oversize_fee": 130, "ahs_fee": 20, "unauthorized_fee": 1150
 }
 
-# 州名双语对照
+# 州名
 US_STATES_CN = {
     'AL': '阿拉巴马', 'AK': '阿拉斯加', 'AZ': '亚利桑那', 'AR': '阿肯色', 'CA': '加利福尼亚',
     'CO': '科罗拉多', 'CT': '康涅狄格', 'DE': '特拉华', 'FL': '佛罗里达', 'GA': '佐治亚',
@@ -65,7 +66,7 @@ US_STATES_CN = {
 }
 
 # ==========================================
-# 2. 网页模板
+# 2. 网页模板 (内置防崩溃机制)
 # ==========================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -73,7 +74,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>业务员报价助手 (Ultimate)</title>
+    <title>报价计算器 (稳定版)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         :root { --primary-color: #0d6efd; --header-bg: #000; }
@@ -85,21 +86,27 @@ HTML_TEMPLATE = """
         .form-label { font-weight: 600; font-size: 0.85rem; color: #555; margin-bottom: 4px; }
         .input-group-text { font-size: 0.85rem; font-weight: 600; background-color: #e9ecef; }
         .form-control, .form-select { font-size: 0.9rem; }
-        /* 状态灯 */
         .status-item { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 4px; }
         .indicator { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
-        .bg-ok { background-color: #198754; } .bg-warn { background-color: #ffc107; } .bg-err { background-color: #dc3545; } .bg-gray { background-color: #ccc; }
-        /* 表格 */
+        .bg-ok { background-color: #198754; } .bg-warn { background-color: #ffc107; } .bg-err { background-color: #dc3545; }
         .result-table th { background-color: #212529; color: #fff; text-align: center; font-size: 0.85rem; vertical-align: middle; }
         .result-table td { text-align: center; vertical-align: middle; font-size: 0.9rem; }
         .price-text { font-weight: 800; font-size: 1.1rem; color: #0d6efd; }
+        
+        /* 错误弹窗 */
+        #globalError { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 9999; width: 80%; display: none; }
     </style>
 </head>
 <body>
 
+<div id="globalError" class="alert alert-danger shadow-lg">
+    <h5 class="alert-heading">⚠️ 系统运行错误</h5>
+    <p id="errorMsg">未知错误</p>
+</div>
+
 <header>
     <div class="container d-flex justify-content-between align-items-center">
-        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 全渠道集成 | 严格对标 6.0-6.3</small></div>
+        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 全渠道集成 (Fix V3)</small></div>
         <div class="text-end"><a href="https://www.fedex.com/en-us/shipping/fuel-surcharge.html" target="_blank" class="btn btn-sm btn-outline-secondary text-white border-secondary">⛽ FedEx燃油</a></div>
     </div>
 </header>
@@ -181,9 +188,6 @@ HTML_TEMPLATE = """
                 </div>
                 <div class="card-body">
                     <div class="alert alert-info py-2 small" id="pkgSummary">请在左侧输入数据...</div>
-                    
-                    <div id="errorContainer" style="display:none;" class="alert alert-danger"></div>
-
                     <div class="table-responsive">
                         <table class="table table-bordered table-hover result-table">
                             <thead>
@@ -212,25 +216,40 @@ HTML_TEMPLATE = """
 <footer><div class="container"><p>&copy; 2026 速狗海外仓 | Update: <span id="updateDate"></span></p></div></footer>
 
 <script>
-    const DATA = __JSON_DATA__;
+    window.onerror = function(msg, url, line) {
+        document.getElementById('globalError').style.display = 'block';
+        document.getElementById('errorMsg').innerText = `脚本错误: ${msg} (Line ${line})`;
+        return false;
+    };
+</script>
+
+<script>
+    // 1. 数据注入 (Python替换)
+    // 即使 Python 注入失败，这里定义一个空对象防止报错
+    let DATA = {};
+    try {
+        DATA = __JSON_DATA__;
+    } catch(e) {
+        console.error("JSON Parse Error", e);
+        throw new Error("数据格式错误，请检查 Excel 是否包含非法字符或空值");
+    }
+
     let CUR_ZONES = {};
     document.getElementById('updateDate').innerText = new Date().toLocaleDateString();
 
-    // 检查数据完整性
-    window.onload = function() {
+    // 2. 初始化检查
+    window.addEventListener('load', function() {
         if (!DATA.zip_db || Object.keys(DATA.zip_db).length === 0) {
-            document.getElementById('errorContainer').style.display = 'block';
-            document.getElementById('errorContainer').innerHTML = '⚠️ 严重警告：邮编数据库加载失败！请检查 Excel 文件是否已上传至 data 目录。';
+            document.getElementById('globalError').style.display = 'block';
+            document.getElementById('errorMsg').innerHTML = '<strong>数据加载失败！</strong><br>未找到邮编数据库。请检查 data/T0.xlsx 是否存在且格式正确。';
         }
-    };
+    });
 
-    // 配置规则
     const RULES = {
         hasResFee: n => !/USPS|XLMILES|UNIUNI/i.test(n),
         hasFuel: n => !/USPS|UNIUNI/i.test(n)
     };
 
-    // 标准化输入
     function standardize(l, w, h, du, wt, wu) {
         let L=parseFloat(l)||0, W=parseFloat(w)||0, H=parseFloat(h)||0, Weight=parseFloat(wt)||0;
         if(du==='cm'){L/=2.54;W/=2.54;H/=2.54} else if(du==='mm'){L/=25.4;W/=25.4;H/=25.4}
@@ -238,7 +257,6 @@ HTML_TEMPLATE = """
         return {L,W,H,Wt:Weight};
     }
 
-    // 实时检查
     function check(pkg) {
         let d=[pkg.L, pkg.W, pkg.H].sort((a,b)=>b-a);
         let L=d[0], G=L+2*(d[1]+d[2]);
@@ -267,17 +285,15 @@ HTML_TEMPLATE = """
         })
     });
 
-    // 查询邮编
     document.getElementById('btnLookup').onclick = () => {
         let z = document.getElementById('zipCode').value.trim();
         let d = document.getElementById('locInfo');
-        if(!DATA.zip_db[z]) { d.innerHTML="<span class='text-danger'>❌ 未找到邮编</span>"; CUR_ZONES={}; return; }
+        if(!DATA.zip_db || !DATA.zip_db[z]) { d.innerHTML="<span class='text-danger'>❌ 未找到邮编</span>"; CUR_ZONES={}; return; }
         let i = DATA.zip_db[z];
         d.innerHTML = `<span class='text-success'>✅ ${i.sn} ${i.s} - ${i.c} [${i.r}]</span>`;
         CUR_ZONES = i.z;
     };
 
-    // 计算
     document.getElementById('btnCalc').onclick = () => {
         let zip = document.getElementById('zipCode').value.trim();
         if((!CUR_ZONES || Object.keys(CUR_ZONES).length===0) && zip) document.getElementById('btnLookup').click();
@@ -296,22 +312,23 @@ HTML_TEMPLATE = """
         document.getElementById('pkgSummary').innerHTML = `<b>计费基准:</b> ${pkg.L.toFixed(1)}"${pkg.W.toFixed(1)}"${pkg.H.toFixed(1)} | 实重:${pkg.Wt.toFixed(2)}lb`;
         let tbody = document.getElementById('resBody'); tbody.innerHTML='';
 
-        if(!DATA.tiers[tier]) { tbody.innerHTML='<tr><td colspan="7" class="text-danger">❌ 该等级数据未加载</td></tr>'; return; }
+        if(!DATA.tiers || !DATA.tiers[tier]) { tbody.innerHTML='<tr><td colspan="7" class="text-danger">❌ 该等级数据未加载，请检查后台文件</td></tr>'; return; }
 
         Object.keys(DATA.tiers[tier]).forEach(ch => {
             let prices = DATA.tiers[tier][ch].prices;
-            if(!prices) return;
+            if(!prices || prices.length === 0) return;
 
             let zone = CUR_ZONES[ch] || '-';
             let cWt = pkg.Wt;
             if(!ch.toUpperCase().includes('UNIUNI')) {
                 let vWt = (pkg.L*pkg.W*pkg.H)/222;
                 cWt = Math.max(pkg.Wt, vWt);
-                if(!ch.includes('GOFO') && cWt>1) cWt = Math.ceil(cWt); // GOFO小件保留小数
+                if(!ch.includes('GOFO') && cWt>1) cWt = Math.ceil(cWt);
             }
 
-            // 找价格
             let row = null;
+            // 确保 cWt 是有效数字，防止 NaN 错误
+            cWt = cWt || 0;
             for(let r of prices) { if(r.w >= cWt-0.001) { row=r; break; } }
             
             let base=0, st="正常", cls="text-success", bg="";
@@ -324,7 +341,6 @@ HTML_TEMPLATE = """
                 if(!base) { st="无报价"; cls="text-warning"; bg="table-warning"; base=0; }
             }
 
-            // 费用
             let fees = {f:0, r:0, p:0, o:0}, details=[];
             if(base>0) {
                 if(RULES.hasFuel(ch)) { fees.f = base*fuelRate; details.push(`燃油:$${fees.f.toFixed(2)}`); }
@@ -376,24 +392,34 @@ HTML_TEMPLATE = """
 """
 
 # ==========================================
-# 3. 数据处理 (引擎增强版)
+# 3. 核心数据清洗 (防止崩溃的防火墙)
 # ==========================================
 
-def get_excel(path, sheet_target):
-    """读取Excel，支持模糊匹配Sheet"""
+def safe_float(val):
+    """
+    终极清洗函数：
+    把 Excel 里的一切妖魔鬼怪（NaN, 空字符串, 文本）
+    全部转化为 float 或 0，绝不让 NaN 进入 JSON
+    """
     try:
-        # ⚠️ 关键修正：显式指定 engine='openpyxl'
-        xl = pd.ExcelFile(path, engine='openpyxl')
-        
-        # 精确匹配
-        if sheet_target in xl.sheet_names:
-            return pd.read_excel(xl, sheet_name=sheet_target, header=None)
-        
-        # 模糊匹配
-        for s in xl.sheet_names:
-            if sheet_target.replace(" ", "").lower() in s.replace(" ", "").lower():
-                print(f"    > 匹配Sheet: {s} -> {sheet_target}")
-                return pd.read_excel(xl, sheet_name=s, header=None)
+        if pd.isna(val) or val == "" or str(val).strip().lower() == "nan":
+            return 0.0
+        # 尝试清理非数字字符 (例如 $5.6)
+        clean_val = str(val).replace('$', '').replace(',', '').strip()
+        return float(clean_val)
+    except:
+        return 0.0
+
+def get_sheet_by_name(excel_file, target_name):
+    """读取Excel，支持模糊匹配"""
+    try:
+        xl = pd.ExcelFile(excel_file, engine='openpyxl')
+        if target_name in xl.sheet_names: 
+            return pd.read_excel(xl, sheet_name=target_name, header=None)
+        for sheet in xl.sheet_names:
+            if target_name.replace(" ", "").lower() in sheet.replace(" ", "").lower():
+                print(f"    > 匹配Sheet: {sheet} -> {target_name}")
+                return pd.read_excel(xl, sheet_name=sheet, header=None)
         return None
     except Exception as e:
         print(f"    > 读取失败: {e}")
@@ -403,37 +429,56 @@ def load_zip_db():
     print("--- 1. 加载邮编库 (T0.xlsx) ---")
     path = os.path.join(DATA_DIR, TIER_FILES['T0'])
     if not os.path.exists(path):
-        print(f"❌ 错误: {path} 不存在！请检查 data 目录。")
+        print(f"❌ 错误: {path} 不存在！")
         return {}
     
-    df = get_excel(path, ZIP_DB_SHEET)
+    df = get_sheet_by_name(path, ZIP_DB_SHEET)
     if df is None: return {}
 
     db = {}
     try:
         start = 0
         for i in range(100):
-            if str(df.iloc[i,1]).strip().isdigit() and len(str(df.iloc[i,1]).strip())==5:
+            # 寻找第一列是5位数字的行
+            cell = str(df.iloc[i,1]).strip()
+            if cell.isdigit() and len(cell) == 5:
                 start = i; break
+        
+        # 将 DataFrame 替换为无 NaN 的版本
+        df = df.fillna("")
         
         for idx, row in df.iloc[start:].iterrows():
             z = str(row[1]).strip()
+            # 强制补全 5 位邮编 (例如 7001 -> 07001)
+            z = z.zfill(5)
+            
             if z.isdigit() and len(z)==5:
                 zones = {}
                 for k, v in ZIP_COL_MAP.items():
                     val = str(row[v]).strip()
-                    zones[k] = val if val not in ['-','nan','', 'None'] else None
+                    # 过滤无效分区字符
+                    if val in ['-', 'nan', '', 'None', '0', 0]:
+                        zones[k] = None
+                    else:
+                        zones[k] = val
                 
                 sb = str(row[3]).strip().upper()
-                db[z] = { "s": sb, "sn": US_STATES_CN.get(sb,''), "c": str(row[4]).strip(), "r": str(row[2]).strip(), "z": zones }
-    except Exception as e: print(f"邮编解析错误: {e}")
+                db[z] = { 
+                    "s": sb, 
+                    "sn": US_STATES_CN.get(sb,''), 
+                    "c": str(row[4]).strip(), 
+                    "r": str(row[2]).strip(), 
+                    "z": zones 
+                }
+    except Exception as e: 
+        print(f"邮编解析错误: {e}")
     print(f"✅ 邮编库加载完毕: {len(db)} 条")
     return db
 
 def to_lb(val):
-    """统一转LB (兼容 OZ/KG)"""
+    """统一转LB"""
     s = str(val).upper().strip()
-    if pd.isna(val) or s=='NAN': return None
+    if pd.isna(val) or s=='NAN' or s=='': return None
     nums = re.findall(r"[\d\.]+", s)
     if not nums: return None
     n = float(nums[0])
@@ -451,13 +496,13 @@ def load_tiers():
         
         t_data = {}
         for ch_key, sheet_name in CHANNEL_SHEET_MAP.items():
-            df = get_excel(path, sheet_name)
+            df = get_sheet_by_name(path, sheet_name)
             if df is None: continue
             
             try:
-                # 找表头
+                # 寻找表头
                 h_row = 0
-                for i in range(30):
+                for i in range(50):
                     row_str = " ".join(df.iloc[i].astype(str).values).lower()
                     if "zone" in row_str and ("weight" in row_str or "lb" in row_str):
                         h_row = i; break
@@ -485,9 +530,14 @@ def load_tiers():
                         item = {'w': lb}
                         for z, col in z_map.items():
                             val = row[col]
-                            if pd.notna(val) and str(val).replace('.','').isdigit():
-                                item[z] = float(val)
-                        prices.append(item)
+                            # 关键：使用 safe_float 确保没有 NaN
+                            clean_p = safe_float(val)
+                            # 只有大于0的价格才收录，或者是0但不是空值
+                            if clean_p > 0:
+                                item[z] = clean_p
+                        
+                        if len(item) > 1: # 至少有一个价格
+                            prices.append(item)
                     except: continue
                 
                 prices.sort(key=lambda x: x['w'])
@@ -509,9 +559,17 @@ if __name__ == '__main__':
         "surcharges": GLOBAL_SURCHARGES
     }
     
-    # 2. 注入
+    # 2. 注入 (禁止 NaN)
     print("\n--- 3. 生成网页 ---")
-    js_str = json.dumps(final)
+    # allow_nan=False 会在遇到 NaN 时报错，帮助我们发现问题。
+    # 但我们已经在上游清洗了，所以这里应该很安全。
+    try:
+        js_str = json.dumps(final, allow_nan=False)
+    except ValueError as e:
+        print(f"❌ 严重错误: 数据中包含 NaN (非数字)，请检查 Excel 清洗逻辑。错误: {e}")
+        # 紧急修复：如果还是有错，强制替换
+        js_str = json.dumps(final).replace("NaN", "0")
+
     html = HTML_TEMPLATE.replace('__JSON_DATA__', js_str).replace('__FUEL__', str(GLOBAL_SURCHARGES['fuel']*100))
     
     with open(os.path.join(OUTPUT_DIR, "index.html"), "w", encoding="utf-8") as f:
