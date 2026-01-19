@@ -13,11 +13,13 @@ warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 DATA_DIR = "data"
 OUTPUT_DIR = "public"
 
+# 文件名配置
 TIER_FILES = {
     "T0": "T0.xlsx", "T1": "T1.xlsx", "T2": "T2.xlsx", "T3": "T3.xlsx"
 }
 
-# 渠道关键词映射 (只要Sheet名包含列表中的词就算匹配)
+# 渠道关键词映射 (逻辑：文件名必须包含列表中的【所有】词)
+# ⚠️ 针对 FedEx-YSD 做了极简匹配，防止找不到
 CHANNEL_KEYWORDS = {
     "GOFO-报价": ["GOFO", "报价"],
     "GOFO-MT-报价": ["GOFO", "MT"],
@@ -27,18 +29,18 @@ CHANNEL_KEYWORDS = {
     "XLmiles-报价": ["XLmiles"],
     "GOFO大件-GRO-报价": ["GOFO", "大件"],
     "FedEx-632-MT-报价": ["632"],
-    "FedEx-YSD-报价": ["FedEx", "YSD"] 
+    "FedEx-YSD-报价": ["YSD"]  # 只要有 YSD 就匹配，防止 FedEx 前缀被省略
 }
 
-# 邮编库配置
-ZIP_DB_SHEET = "GOFO-报价"
+# 邮编库所在 Sheet
+ZIP_DB_SHEET_KEYS = ["GOFO", "报价"]
 ZIP_COL_MAP = {
     "GOFO-报价": 5, "GOFO-MT-报价": 6, "UNIUNI-MT-报价": 7, "USPS-YSD-报价": 8,
     "FedEx-ECO-MT报价": 9, "XLmiles-报价": 10, "GOFO大件-GRO-报价": 11,
     "FedEx-632-MT-报价": 12, "FedEx-YSD-报价": 13
 }
 
-# 基础附加费 (前端会覆盖，此处仅防报错)
+# 默认附加费 (会被JS逻辑覆盖)
 GLOBAL_SURCHARGES = {
     "fuel": 0.16, 
     "res_fee": 3.50, "peak_res": 1.32,
@@ -62,7 +64,7 @@ US_STATES_CN = {
 }
 
 # ==========================================
-# 2. 网页模板 (集成V10逻辑)
+# 2. 网页模板 (Fix V11)
 # ==========================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -70,7 +72,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>报价计算器 (Expert V10)</title>
+    <title>报价计算器 (Expert V11)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         :root { --primary-color: #0d6efd; --header-bg: #000; }
@@ -103,8 +105,8 @@ HTML_TEMPLATE = """
 
 <header>
     <div class="container d-flex justify-content-between align-items-center">
-        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 专家版 (Fix V10)</small></div>
-        <div class="text-end text-white small">Auto-Calc Enabled</div>
+        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 专家版 (V11)</small></div>
+        <div class="text-end text-white small">Strict Policy V11.0</div>
     </div>
 </header>
 
@@ -218,7 +220,7 @@ HTML_TEMPLATE = """
                     </div>
                     <div class="mt-2 text-muted small border-top pt-2">
                         <strong>计费逻辑说明：</strong><br>
-                        1. <strong>GOFO大件</strong>：独立燃油率，公式: (运费+杂费)*(1+燃油)。<br>
+                        1. <strong>GOFO大件</strong>：独立燃油，公式: (运费+杂费)*(1+燃油)。<br>
                         2. <strong>FedEx ECO-MT</strong>：超长/超重/超大 三项取最大值 (Max-of-Three)。<br>
                         3. <strong>USPS</strong>：无燃油/住宅费。体积重>1728 in³ 时除以166。<br>
                         4. <strong>UniUni</strong>：实重计费，无燃油/住宅费。<br>
@@ -247,7 +249,7 @@ HTML_TEMPLATE = """
     document.getElementById('updateDate').innerText = new Date().toLocaleDateString();
 
     // ===================================
-    // V10 核心业务配置 (Expert Logic)
+    // V11 核心业务配置 (Expert Logic)
     // ===================================
     
     const USPS_BLOCK = ['006','007','008','009','090','091','092','093','094','095','096','097','098','099','340','962','963','964','965','966','967','968','969','995','996','997','998','999'];
@@ -345,7 +347,7 @@ HTML_TEMPLATE = """
         let d = document.getElementById('locInfo');
         if(!DATA.zip_db || !DATA.zip_db[z]) { d.innerHTML="<span class='text-danger'>❌ 未找到邮编</span>"; CUR_ZONES={}; return; }
         let i = DATA.zip_db[z];
-        d.innerHTML = `<span class='text-success'>✅ ${i.sn} ${i.s} - ${i.c} [${i.r}]</span>`;
+        d.innerHTML = `<span class='text-success'>✅ ${i.sn} ${i.s} - ${i.c}</span>`;
         CUR_ZONES = i.z;
     };
 
@@ -376,7 +378,6 @@ HTML_TEMPLATE = """
 
         Object.keys(DATA.tiers[tier]).forEach(ch => {
             let prices = DATA.tiers[tier][ch].prices;
-            // 修复：如果该渠道没有价格数据，跳过不报错
             if(!prices || prices.length===0) return;
 
             let zoneVal = CUR_ZONES[ch] || '-';
@@ -396,7 +397,6 @@ HTML_TEMPLATE = """
             // 2. 匹配价格
             let zKey = zoneVal==='1'?'2':zoneVal;
             let row = null;
-            // 修复: 确保重量是数字
             let searchWt = parseFloat(cWt) || 0;
             for(let r of prices) { if(r.w >= searchWt - 0.001) { row=r; break; } }
 
@@ -495,7 +495,7 @@ HTML_TEMPLATE = """
 
             tbody.innerHTML += `<tr class="${bg}">
                 <td class="fw-bold text-start text-nowrap">${ch}</td>
-                <td><span class="badge-zone">Zone ${zoneVal}</span></td>
+                <td><span class="badge-zone">Z${zoneVal}</span></td>
                 <td>${cWt.toFixed(2)}</td>
                 <td class="fw-bold">${base.toFixed(2)}</td>
                 <td class="text-start small" style="line-height:1.2">${details.join('<br>')||'-'}</td>
@@ -538,7 +538,6 @@ def load_zip_db():
     path = os.path.join(DATA_DIR, TIER_FILES['T0'])
     if not os.path.exists(path): return {}
     
-    # 特殊匹配 GOFO 报价表
     df = get_sheet_by_name(path, ["GOFO", "报价"])
     if df is None: return {}
 
