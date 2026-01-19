@@ -17,17 +17,18 @@ TIER_FILES = {
     "T0": "T0.xlsx", "T1": "T1.xlsx", "T2": "T2.xlsx", "T3": "T3.xlsx"
 }
 
-# 渠道关键词 (文件名包含这些词即匹配)
+# 渠道关键词配置
+# 逻辑：必须包含列表内【所有】关键词才匹配 Sheet
 CHANNEL_KEYWORDS = {
     "GOFO-报价": ["GOFO", "报价"],
     "GOFO-MT-报价": ["GOFO", "MT"],
     "UNIUNI-MT-报价": ["UNIUNI"],
-    "USPS-YSD-报价": ["USPS"],
+    "USPS-YSD-报价": ["USPS", "YSD"],
     "FedEx-ECO-MT报价": ["ECO", "MT"],
     "XLmiles-报价": ["XLmiles"],
     "GOFO大件-GRO-报价": ["GOFO", "大件"],
     "FedEx-632-MT-报价": ["632"],
-    "FedEx-YSD-报价": ["YSD"]  # 暴力匹配 YSD
+    "FedEx-YSD-报价": ["FedEx", "YSD"]  # 必须同时包含 FedEx 和 YSD
 }
 
 # 邮编库配置
@@ -45,7 +46,7 @@ GLOBAL_SURCHARGES = {
 }
 
 # ==========================================
-# 2. 网页模板 (UI恢复，仅Zone去色)
+# 2. 网页模板 (纯净版 V16)
 # ==========================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -53,125 +54,97 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>报价计算器 (V15)</title>
+    <title>报价计算器 (V16)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        :root { --primary-color: #0d6efd; --header-bg: #000; }
-        body { font-family: 'Segoe UI', system-ui, sans-serif; background-color: #f4f6f9; min-height: 100vh; display: flex; flex-direction: column; }
-        header { background-color: var(--header-bg); color: #fff; padding: 12px 0; border-bottom: 3px solid #333; }
-        footer { background-color: var(--header-bg); color: #aaa; padding: 20px 0; margin-top: auto; text-align: center; font-size: 0.8rem; }
+        body { font-family: 'Segoe UI', sans-serif; background-color: #fff; font-size: 14px; }
+        header { background: #000; color: #fff; padding: 10px 0; border-bottom: 2px solid #333; }
+        .card { border: 1px solid #ddd; box-shadow: none; border-radius: 4px; }
+        .card-header { background: #f8f9fa; font-weight: bold; border-bottom: 1px solid #ddd; padding: 8px 15px; }
+        .form-label { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
+        .form-control, .form-select { border-radius: 2px; font-size: 13px; }
+        .btn { border-radius: 2px; }
         
-        /* 恢复好看的卡片样式 */
-        .card { border: none; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 20px; }
-        .card-header { background-color: #212529; color: #fff; font-weight: 600; padding: 10px 20px; border-radius: 8px 8px 0 0 !important; }
+        /* 结果表格 - 极简风格 */
+        .result-table th { background: #333; color: #fff; text-align: center; font-size: 12px; padding: 8px; }
+        .result-table td { text-align: center; vertical-align: middle; border-bottom: 1px solid #eee; padding: 6px; }
+        .price-text { color: #d63384; font-weight: 800; font-size: 15px; }
+        .fuel-link { font-size: 12px; text-decoration: none; margin-left: 10px; }
         
-        .form-label { font-weight: 600; font-size: 0.85rem; color: #555; margin-bottom: 4px; }
-        .input-group-text { font-size: 0.85rem; font-weight: 600; background-color: #e9ecef; }
-        .form-control, .form-select { font-size: 0.9rem; }
-        
-        .result-table th { background-color: #212529; color: #fff; text-align: center; font-size: 0.85rem; vertical-align: middle; }
-        .result-table td { text-align: center; vertical-align: middle; font-size: 0.9rem; }
-        .price-text { font-weight: 800; font-size: 1.1rem; color: #0d6efd; }
-        
-        /* 错误提示 */
-        #globalError { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 9999; width: 80%; display: none; }
-        
-        /* 状态灯 */
-        .indicator { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 5px; }
-        .bg-ok { background-color: #198754; } .bg-err { background-color: #dc3545; }
-        
-        .fuel-link { font-size: 0.75rem; text-decoration: none; color: #0d6efd; display: block; margin-top: 2px; }
+        #globalError { display: none; background: #ffe6e6; color: #d00; padding: 10px; text-align: center; font-weight: bold; }
     </style>
 </head>
 <body>
 
-<div id="globalError" class="alert alert-danger shadow-lg">
-    <h5 class="alert-heading">⚠️ 系统运行错误</h5>
-    <p id="errorMsg">未知错误</p>
-</div>
+<div id="globalError"></div>
 
 <header>
     <div class="container d-flex justify-content-between align-items-center">
-        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 专家版 (V15)</small></div>
-        <div class="text-end"><a href="https://www.fedex.com.cn/en-us/shipping/historical-fuel-surcharge.html" target="_blank" class="text-white small" style="text-decoration:none;">⛽ FedEx燃油官网</a></div>
+        <h6 class="m-0">📦 业务员报价助手 V16 (Fix)</h6>
+        <a href="https://www.fedex.com.cn/en-us/shipping/historical-fuel-surcharge.html" target="_blank" class="text-white fuel-link">FedEx燃油</a>
     </div>
 </header>
 
-<div class="container my-4">
-    <div class="row g-4">
+<div class="container my-3">
+    <div class="row g-3">
         <div class="col-lg-4">
             <div class="card h-100">
-                <div class="card-header">1. 基础信息录入</div>
+                <div class="card-header">参数录入</div>
                 <div class="card-body">
                     <form id="calcForm">
-                        <div class="bg-light p-2 rounded border mb-3">
-                            <div class="fw-bold small mb-2 border-bottom">⛽ 燃油费率</div>
+                        <div class="mb-3 border p-2 bg-light">
+                            <label class="form-label">燃油费率 (%)</label>
                             <div class="row g-2">
-                                <div class="col-6 border-end">
-                                    <label class="form-label small">通用燃油 (%)</label>
+                                <div class="col-6">
                                     <input type="number" class="form-control form-control-sm" id="genFuel" value="16.0">
+                                    <div class="form-text" style="font-size:11px">通用 (FedEx/USPS)</div>
                                 </div>
                                 <div class="col-6">
-                                    <label class="form-label small">GOFO大件 (%)</label>
                                     <input type="number" class="form-control form-control-sm" id="gofoFuel" value="15.0">
+                                    <div class="form-text" style="font-size:11px">GOFO大件独立</div>
                                 </div>
                             </div>
                         </div>
 
                         <div class="mb-3">
                             <label class="form-label">客户等级</label>
-                            <div class="btn-group w-100" role="group">
-                                <input type="radio" class="btn-check tier-radio" name="tier" id="t0" value="T0"><label class="btn btn-outline-secondary" for="t0">T0</label>
-                                <input type="radio" class="btn-check tier-radio" name="tier" id="t1" value="T1"><label class="btn btn-outline-secondary" for="t1">T1</label>
-                                <input type="radio" class="btn-check tier-radio" name="tier" id="t2" value="T2"><label class="btn btn-outline-secondary" for="t2">T2</label>
-                                <input type="radio" class="btn-check tier-radio" name="tier" id="t3" value="T3" checked><label class="btn btn-outline-secondary" for="t3">T3</label>
+                            <div class="btn-group w-100">
+                                <input type="radio" class="btn-check tier-radio" name="tier" id="t0" value="T0"><label class="btn btn-sm btn-outline-dark" for="t0">T0</label>
+                                <input type="radio" class="btn-check tier-radio" name="tier" id="t1" value="T1"><label class="btn btn-sm btn-outline-dark" for="t1">T1</label>
+                                <input type="radio" class="btn-check tier-radio" name="tier" id="t2" value="T2"><label class="btn btn-sm btn-outline-dark" for="t2">T2</label>
+                                <input type="radio" class="btn-check tier-radio" name="tier" id="t3" value="T3" checked><label class="btn btn-sm btn-outline-dark" for="t3">T3</label>
                             </div>
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label">目的地邮编 (Zip)</label>
-                            <div class="input-group">
-                                <input type="text" class="form-control" id="zipCode" placeholder="5位邮编">
+                            <label class="form-label">邮编 (Zip)</label>
+                            <div class="input-group input-group-sm">
+                                <input type="text" class="form-control" id="zipCode" placeholder="5位数字">
                                 <button class="btn btn-dark" type="button" id="btnLookup">查询</button>
                             </div>
-                            <div id="locInfo" class="mt-1 small fw-bold text-success ps-1"></div>
+                            <div id="locInfo" class="mt-1 fw-bold text-success" style="font-size:13px"></div>
                         </div>
 
                         <div class="row g-2 mb-3">
-                            <div class="col-7">
-                                <label class="form-label">地址类型</label>
-                                <select class="form-select" id="addressType"><option value="res">🏠 住宅地址</option><option value="com">🏢 商业地址</option></select>
-                            </div>
-                            <div class="col-5 pt-4">
-                                <div class="form-check form-switch">
-                                    <input class="form-check-input" type="checkbox" id="peakToggle">
-                                    <label class="form-check-label small fw-bold" for="peakToggle">旺季费</label>
-                                </div>
-                            </div>
+                            <div class="col-7"><select class="form-select form-select-sm" id="addressType"><option value="res">🏠 住宅地址</option><option value="com">🏢 商业地址</option></select></div>
+                            <div class="col-5 pt-1"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="peakToggle"><label class="form-check-label" for="peakToggle">旺季费</label></div></div>
                         </div>
 
                         <hr>
-
-                        <div class="mb-3">
-                            <label class="form-label">包裹规格</label>
-                            <div class="row g-2">
-                                <div class="col-4"><div class="input-group input-group-sm"><span class="input-group-text">长</span><input type="number" class="form-control" id="length" placeholder="L"></div></div>
-                                <div class="col-4"><div class="input-group input-group-sm"><span class="input-group-text">宽</span><input type="number" class="form-control" id="width" placeholder="W"></div></div>
-                                <div class="col-4"><div class="input-group input-group-sm"><span class="input-group-text">高</span><input type="number" class="form-control" id="height" placeholder="H"></div></div>
-                                <div class="col-12"><select class="form-select form-select-sm" id="dimUnit"><option value="in">IN (英寸)</option><option value="cm">CM (厘米)</option><option value="mm">MM (毫米)</option></select></div>
-                            </div>
-                            <div class="row g-2 mt-2">
-                                <div class="col-8"><div class="input-group input-group-sm"><span class="input-group-text">重量</span><input type="number" class="form-control" id="weight" placeholder="实重"></div></div>
-                                <div class="col-4"><select class="form-select form-select-sm" id="weightUnit"><option value="lb">LB</option><option value="oz">OZ</option><option value="kg">KG</option><option value="g">G</option></select></div>
-                            </div>
+                        <label class="form-label">包裹规格</label>
+                        <div class="row g-1 mb-2">
+                            <div class="col-3"><input type="number" class="form-control form-control-sm" id="length" placeholder="长"></div>
+                            <div class="col-3"><input type="number" class="form-control form-control-sm" id="width" placeholder="宽"></div>
+                            <div class="col-3"><input type="number" class="form-control form-control-sm" id="height" placeholder="高"></div>
+                            <div class="col-3"><select class="form-select form-select-sm" id="dimUnit"><option value="in">IN</option><option value="cm">CM</option></select></div>
+                        </div>
+                        <div class="row g-1">
+                            <div class="col-9"><input type="number" class="form-control form-control-sm" id="weight" placeholder="实重"></div>
+                            <div class="col-3"><select class="form-select form-select-sm" id="weightUnit"><option value="lb">LB</option><option value="oz">OZ</option><option value="kg">KG</option></select></div>
                         </div>
 
-                        <div class="bg-light p-2 rounded border mb-3">
-                            <div class="fw-bold small mb-2 border-bottom">🚦 渠道合规性检查</div>
-                            <div id="checkList" class="small text-muted">等待输入...</div>
-                        </div>
-
-                        <button type="button" class="btn btn-primary w-100 fw-bold" id="btnCalc">开始计算 (Calculate)</button>
+                        <div id="checkList" class="mt-3 text-muted" style="font-size:12px"></div>
+                        <button type="button" class="btn btn-primary w-100 mt-3" id="btnCalc">计 算</button>
                     </form>
                 </div>
             </div>
@@ -180,24 +153,14 @@ HTML_TEMPLATE = """
         <div class="col-lg-8">
             <div class="card h-100">
                 <div class="card-header d-flex justify-content-between">
-                    <span>📊 测算结果</span>
-                    <span id="tierBadge" class="badge bg-warning text-dark"></span>
+                    <span>计算结果</span>
+                    <span id="tierLabel">T3</span>
                 </div>
-                <div class="card-body">
-                    <div class="alert alert-info py-2 small" id="pkgSummary">请在左侧输入数据...</div>
+                <div class="card-body p-0">
+                    <div class="p-2 border-bottom bg-light small" id="pkgSummary">等待输入...</div>
                     <div class="table-responsive">
-                        <table class="table table-bordered table-hover result-table">
-                            <thead>
-                                <tr>
-                                    <th width="15%">渠道</th>
-                                    <th width="8%">分区</th>
-                                    <th width="10%">计费重</th>
-                                    <th width="12%">基础运费</th>
-                                    <th width="20%">明细</th>
-                                    <th width="15%">总费用</th>
-                                    <th width="20%">状态</th>
-                                </tr>
-                            </thead>
+                        <table class="table table-hover result-table m-0">
+                            <thead><tr><th>渠道</th><th>分区</th><th>计费重</th><th>基础运费</th><th>明细</th><th>总费用</th><th>状态</th></tr></thead>
                             <tbody id="resBody"></tbody>
                         </table>
                     </div>
@@ -207,21 +170,14 @@ HTML_TEMPLATE = """
     </div>
 </div>
 
-<footer><div class="container"><p>&copy; 2026 速狗海外仓 | Update: <span id="updateDate"></span></p></div></footer>
-
 <script>
-    // 错误处理
-    window.onerror = function(msg, u, l) { 
-        document.getElementById('globalError').style.display='block'; 
-        document.getElementById('errorMsg').innerText=`${msg} (L${l})`; 
-    };
-
     let DATA = {};
-    try { DATA = __JSON_DATA__; } catch(e) { throw new Error("JSON数据加载失败"); }
+    try { DATA = __JSON_DATA__; } catch(e) { 
+        document.getElementById('globalError').innerText='数据加载失败: ' + e.message; 
+        document.getElementById('globalError').style.display='block'; 
+    }
     let CUR_ZONES = {};
-    document.getElementById('updateDate').innerText = new Date().toLocaleDateString();
 
-    // 核心工具函数
     function standardize(l, w, h, du, wt, wu) {
         let L=parseFloat(l)||0, W=parseFloat(w)||0, H=parseFloat(h)||0, Wt=parseFloat(wt)||0;
         if(du==='cm'){L/=2.54;W/=2.54;H/=2.54}
@@ -237,28 +193,20 @@ HTML_TEMPLATE = """
         return 222;
     }
 
-    // 实时检测
     function check(p) {
         let d=[p.L, p.W, p.H].sort((a,b)=>b-a);
         let L=d[0], G=L+2*(d[1]+d[2]);
         let h = '';
-        const row = (n, ok) => `<div class="d-flex justify-content-between mb-1"><span>${n}</span><span class="${ok?'text-success':'text-danger'}">${ok?'√ 正常':'× 超标'}</span></div>`;
+        const row = (n, ok) => `<div class="d-flex justify-content-between mb-1"><span>${n}</span><span style="color:${ok?'green':'red'}">${ok?'√':'× 超标'}</span></div>`;
         h += row('USPS (70lb/130")', p.Wt<=70 && G<=130);
         h += row('UniUni (20lb/L20")', p.Wt<=20 && L<=20);
         h += row('FedEx (150lb/108")', p.Wt<=150 && L<=108);
         document.getElementById('checkList').innerHTML = h;
     }
 
-    // 事件绑定
-    document.querySelectorAll('.tier-radio').forEach(r => r.addEventListener('change', () => { 
+    document.querySelectorAll('.tier-radio').forEach(el => el.addEventListener('change', () => { 
         if(document.getElementById('weight').value) document.getElementById('btnCalc').click(); 
     }));
-
-    ['length','width','height','weight'].forEach(id => {
-        document.getElementById(id).addEventListener('input', () => {
-             // 简单的输入监听，实际计算还是点按钮
-        });
-    });
 
     document.getElementById('btnLookup').onclick = () => {
         let z = document.getElementById('zipCode').value.trim();
@@ -266,7 +214,6 @@ HTML_TEMPLATE = """
             document.getElementById('locInfo').innerText="❌ 未找到"; CUR_ZONES={}; return; 
         }
         let i = DATA.zip_db[z];
-        // 纯净显示：State - City
         document.getElementById('locInfo').innerText = `✅ ${i.s} - ${i.c}`;
         CUR_ZONES = i.z;
     };
@@ -287,7 +234,7 @@ HTML_TEMPLATE = """
         let genF = parseFloat(document.getElementById('genFuel').value)/100;
         let gofoF = parseFloat(document.getElementById('gofoFuel').value)/100;
 
-        document.getElementById('tierBadge').innerText = tier;
+        document.getElementById('tierLabel').innerText = tier;
         document.getElementById('pkgSummary').innerText = `${p.L.toFixed(1)}x${p.W.toFixed(1)}x${p.H.toFixed(1)}" | ${p.Wt.toFixed(2)}lb`;
         let tbody = document.getElementById('resBody'); tbody.innerHTML='';
         check(p);
@@ -297,38 +244,38 @@ HTML_TEMPLATE = """
         Object.keys(DATA.tiers[tier]).forEach(ch => {
             let prices = DATA.tiers[tier][ch].prices;
             if(!prices) return;
-
+            
             let zone = CUR_ZONES[ch] || '-';
             let vol = p.L * p.W * p.H;
             let div = getDivisor(ch, vol);
             let cWt = (div > 0) ? Math.max(p.Wt, vol/div) : p.Wt;
             if(!ch.includes('GOFO') && cWt>1) cWt = Math.ceil(cWt);
-
+            
             let row = null;
             let sWt = parseFloat(cWt)||0;
             for(let r of prices) { if(r.w >= sWt-0.001) { row=r; break; } }
 
-            let base=0, st="正常", bg=""; 
-            let zKey = (zone==='1'?'2':zone); // Z1->Z2
+            let base=0, st="OK", bg="";
+            let zKey = (zone==='1'?'2':zone);
 
-            if(!row || zone==='-') { st="无报价"; bg="table-light"; }
+            if(!row || zone==='-') { st="无报价"; bg="#f9f9f9"; }
             else { base = row[zKey]; if(!base) { base=0; st="缺数据"; } }
 
             let f=0, r=0, pk=0, ot=0, list=[];
             if(base > 0) {
-                let u = ch.toUpperCase();
+                let u=ch.toUpperCase();
                 // 住宅费
                 if(isRes && u.includes('FEDEX') && !u.includes('ECO')) { 
                     r=DATA.surcharges.res_fee; list.push(`住宅:${r}`); 
                 }
                 
-                // 超大检查 (简化版, 保证稳定)
+                // 超大
                 let d=[p.L,p.W,p.H].sort((a,b)=>b-a);
                 if(d[0]>96 || d[0]+2*(d[1]+d[2])>130) { 
                     ot=DATA.surcharges.oversize_fee; list.push(`超大:${ot}`); 
                 }
 
-                // 旺季费
+                // 旺季
                 if(isPeak) {
                     if(u.includes('USPS')) pk=0.35;
                     else { if(r>0) pk+=DATA.surcharges.peak_res; if(ot>0) pk+=DATA.surcharges.peak_oversize; }
@@ -337,25 +284,23 @@ HTML_TEMPLATE = """
 
                 // 燃油费
                 if(u.includes('GOFO') && u.includes('大件')) {
-                    // GOFO大件公式: (运费+杂费)*(1+燃油) -> 燃油部分
+                    // GOFO大件特殊公式
                     let sub = base+r+pk+ot;
                     f = sub * gofoF;
                     list.push(`燃油:${f.toFixed(2)}`);
                 } 
                 else if(!u.includes('ECO') && !u.includes('GOFO') && !u.includes('XL') && !u.includes('UNI')) {
-                    // 通用燃油
+                    // 通用
                     f = base * genF;
                     list.push(`燃油:${f.toFixed(2)}`);
                 }
             }
 
             let tot = base + f + r + pk + ot;
-            
-            // 纯净显示分区：直接显示 Z1, Z2... 无颜色
             let zDisplay = zone==='-' ? '-' : 'Z'+zone;
 
-            tbody.innerHTML += `<tr class="${bg}">
-                <td class="fw-bold text-start ps-3">${ch}</td>
+            tbody.innerHTML += `<tr style="background-color:${bg}">
+                <td class="fw-bold text-start ps-2">${ch}</td>
                 <td>${zDisplay}</td>
                 <td>${cWt.toFixed(2)}</td>
                 <td class="fw-bold">${base.toFixed(2)}</td>
@@ -371,14 +316,24 @@ HTML_TEMPLATE = """
 """
 
 # ==========================================
-# 3. 核心清洗逻辑
+# 3. 核心清洗逻辑 (Fix)
 # ==========================================
 
 def get_sheet(xl, keys):
+    # 模糊匹配
     for name in xl.sheet_names:
         if all(k.upper() in name.upper() for k in keys):
+            print(f"    > Sheet匹配成功: {name}")
             return pd.read_excel(xl, sheet_name=name, header=None)
     return None
+
+def safe_float(val):
+    # 强制清洗：去除 $ , 空格 等干扰
+    try:
+        s = str(val).replace('$','').replace(',','').strip()
+        if not s or s.lower() == 'nan': return 0.0
+        return float(s)
+    except: return 0.0
 
 def load_zip_db():
     print("--- 加载邮编库 ---")
@@ -411,6 +366,7 @@ def load_tiers():
     print("--- 加载报价表 ---")
     all_tiers = {}
     for t_name, f_name in TIER_FILES.items():
+        print(f"处理 {t_name}...")
         path = os.path.join(DATA_DIR, f_name)
         if not os.path.exists(path): continue
         xl = pd.ExcelFile(path, engine='openpyxl')
@@ -419,16 +375,25 @@ def load_tiers():
             df = get_sheet(xl, keywords)
             if df is None: continue
             try:
+                # FedEx-YSD 特殊处理：强制找 'Zone 2'
+                is_fedex_ysd = "YSD" in ch_key and "FEDEX" in ch_key.upper()
+                
                 h_row = 0
                 for i in range(50):
                     txt = " ".join(df.iloc[i].astype(str).values).lower()
-                    if "zone" in txt and ("weight" in txt or "lb" in txt): h_row=i; break
+                    # FedEx-YSD 必须匹配 zone 2
+                    if is_fedex_ysd:
+                        if "zone" in txt and "2" in txt and ("weight" in txt or "lb" in txt): h_row=i; break
+                    else:
+                        if "zone" in txt and ("weight" in txt or "lb" in txt): h_row=i; break
+                
                 headers = df.iloc[h_row].astype(str).str.lower().tolist()
                 w_idx = -1; z_map = {}
                 for i, v in enumerate(headers):
                     if ('weight' in v or 'lb' in v) and w_idx==-1: w_idx=i
                     m = re.search(r'zone\s*~?\s*(\d+)', v)
                     if m: z_map[m.group(1)] = i
+                
                 if w_idx == -1: continue
                 prices = []
                 for _, row in df.iloc[h_row+1:].iterrows():
@@ -439,11 +404,10 @@ def load_tiers():
                         w = float(nums[0])
                         if 'OZ' in w_raw: w/=16.0
                         elif 'KG' in w_raw: w/=0.453592
+                        
                         item = {'w': w}
                         for zk, col in z_map.items():
-                            val = str(row[col]).replace('$','').replace(',','').strip()
-                            try: f_val = float(val)
-                            except: f_val = 0.0
+                            f_val = safe_float(row[col])
                             if f_val > 0: item[zk] = f_val
                         if len(item) > 1: prices.append(item)
                     except: continue
@@ -461,4 +425,4 @@ if __name__ == '__main__':
     except: js_str = json.dumps(final).replace("NaN", "0")
     html = HTML_TEMPLATE.replace('__JSON_DATA__', js_str).replace('__FUEL__', str(GLOBAL_SURCHARGES['fuel']*100))
     with open(os.path.join(OUTPUT_DIR, "index.html"), "w", encoding="utf-8") as f: f.write(html)
-    print("✅ V15 完成！")
+    print("✅ V16 完成！")
