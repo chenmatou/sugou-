@@ -1,0 +1,38 @@
+name: Deploy Quote Tool
+
+# 触发条件：当 main 分支有代码推送时触发
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # 允许手动点击按钮触发
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code (拉取代码)
+        uses: actions/checkout@v3
+
+      - name: Set up Python (安装Python环境)
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies (安装依赖)
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Generator (运行生成脚本)
+        run: |
+          python generate.py
+
+      - name: Deploy to GitHub Pages (发布网页)
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
+          commit_message: "Auto-deploy: update prices"
