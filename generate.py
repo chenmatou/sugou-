@@ -8,7 +8,7 @@ import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 # ==========================================
-# 1. 全局配置 (绝对置顶，防止 NameError)
+# 1. 全局配置
 # ==========================================
 DATA_DIR = "data"
 OUTPUT_DIR = "public"
@@ -65,7 +65,7 @@ US_STATES_CN = {
 }
 
 # ==========================================
-# 2. 网页模板 (已修复 JS 错误)
+# 2. 网页模板 (已修复所有 JS ID 错误)
 # ==========================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -73,7 +73,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>报价计算器 (Fixed)</title>
+    <title>报价计算器 (Fixed V2)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         :root { --primary-color: #0d6efd; --header-bg: #000; }
@@ -85,11 +85,9 @@ HTML_TEMPLATE = """
         .form-label { font-weight: 600; font-size: 0.85rem; color: #555; margin-bottom: 4px; }
         .input-group-text { font-size: 0.85rem; font-weight: 600; background-color: #e9ecef; }
         .form-control, .form-select { font-size: 0.9rem; }
-        /* 状态灯 */
         .status-item { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 4px; }
         .indicator { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
         .bg-ok { background-color: #198754; } .bg-warn { background-color: #ffc107; } .bg-err { background-color: #dc3545; }
-        /* 表格 */
         .result-table th { background-color: #212529; color: #fff; text-align: center; font-size: 0.85rem; vertical-align: middle; }
         .result-table td { text-align: center; vertical-align: middle; font-size: 0.9rem; }
         .price-text { font-weight: 800; font-size: 1.1rem; color: #0d6efd; }
@@ -105,7 +103,7 @@ HTML_TEMPLATE = """
 
 <header>
     <div class="container d-flex justify-content-between align-items-center">
-        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 全渠道集成 (Final Fix)</small></div>
+        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 全渠道集成 (Fix V4)</small></div>
         <div class="text-end"><a href="https://www.fedex.com/en-us/shipping/fuel-surcharge.html" target="_blank" class="btn btn-sm btn-outline-secondary text-white border-secondary">⛽ FedEx燃油</a></div>
     </div>
 </header>
@@ -282,7 +280,6 @@ HTML_TEMPLATE = """
         })
     });
 
-    // 查询邮编
     document.getElementById('btnLookup').onclick = () => {
         let z = document.getElementById('zipCode').value.trim();
         let d = document.getElementById('locInfo');
@@ -292,7 +289,6 @@ HTML_TEMPLATE = """
         CUR_ZONES = i.z;
     };
 
-    // 计算
     document.getElementById('btnCalc').onclick = () => {
         let zip = document.getElementById('zipCode').value.trim();
         if((!CUR_ZONES || Object.keys(CUR_ZONES).length===0) && zip) document.getElementById('btnLookup').click();
@@ -306,14 +302,13 @@ HTML_TEMPLATE = """
         let isRes = document.getElementById('addressType').value === 'res';
         let fuelRate = parseFloat(document.getElementById('fuelRate').value)/100;
 
-        // 这里移除了导致报错的 resultSection.style.display 调用
-        // 因为在新的布局中，结果区域是常驻的，或者是通过父级容器控制
-        // 如果这里 id="resultSection" 实际上不可见，确保 HTML 中有 display:none
-        // (修复版 HTML 中有 style="display:none;" 且 id 存在)
-        let resSec = document.getElementById('resultSection');
-        if(resSec) resSec.style.display = 'block';
-
-        document.getElementById('tierBadge').innerText = tier;
+        // 修复点：移除了不存在的 resultSection.style.display
+        // 结果区域现在是布局的一部分，无需手动显示
+        
+        // 修复点：ID校准
+        let badge = document.getElementById('tierBadge');
+        if(badge) badge.innerText = tier;
+        
         document.getElementById('pkgSummary').innerHTML = `<b>计费基准:</b> ${pkg.L.toFixed(1)}"${pkg.W.toFixed(1)}"${pkg.H.toFixed(1)} | 实重:${pkg.Wt.toFixed(2)}lb`;
         let tbody = document.getElementById('resBody'); tbody.innerHTML='';
 
@@ -548,7 +543,7 @@ if __name__ == '__main__':
         "surcharges": GLOBAL_SURCHARGES
     }
     
-    # 2. 注入
+    # 2. 注入 (禁止 NaN)
     print("\n--- 3. 生成网页 ---")
     try:
         js_str = json.dumps(final, allow_nan=False)
