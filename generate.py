@@ -8,15 +8,20 @@ import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 # ==========================================
-# 1. 基础配置
+# 1. 核心配置区域 (配置必须放在最前面)
 # ==========================================
 DATA_DIR = "data"
 OUTPUT_DIR = "public"
 
+# Excel 文件名对应
 TIER_FILES = {
-    "T0": "T0.xlsx", "T1": "T1.xlsx", "T2": "T2.xlsx", "T3": "T3.xlsx"
+    "T0": "T0.xlsx", 
+    "T1": "T1.xlsx", 
+    "T2": "T2.xlsx", 
+    "T3": "T3.xlsx"
 }
 
+# Excel Sheet 名称映射
 CHANNEL_SHEET_MAP = {
     "GOFO-报价": "GOFO-报价",
     "GOFO-MT-报价": "GOFO-MT-报价",
@@ -37,6 +42,18 @@ ZIP_COL_MAP = {
     "FedEx-632-MT-报价": 12, "FedEx-YSD-报价": 13
 }
 
+# 全局附加费 (T3为基准，此处必须定义)
+GLOBAL_SURCHARGES = {
+    "fuel": 0.16, 
+    "res_fee": 3.50, 
+    "peak_res": 1.32,
+    "peak_oversize": 54, 
+    "peak_unauthorized": 220,
+    "oversize_fee": 130, 
+    "ahs_fee": 20, 
+    "unauthorized_fee": 1150
+}
+
 # 美国州名中英对照
 US_STATES_CN = {
     'AL': '阿拉巴马', 'AK': '阿拉斯加', 'AZ': '亚利桑那', 'AR': '阿肯色', 'CA': '加利福尼亚',
@@ -53,7 +70,7 @@ US_STATES_CN = {
 }
 
 # ==========================================
-# 2. 网页模板 (HTML/CSS/JS)
+# 2. 网页模板 (含严格的 JS 计算逻辑)
 # ==========================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -78,7 +95,7 @@ HTML_TEMPLATE = """
         .input-group-text { background-color: #e9ecef; font-weight: 600; font-size: 0.85rem; }
         .form-control, .form-select { font-size: 0.9rem; }
         
-        /* 状态指示器 (Traffic Light) */
+        /* 状态指示器 */
         .status-box { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 10px; margin-top: 10px; }
         .status-item { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; font-size: 0.85rem; }
         .status-indicator { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background-color: #ccc; margin-right: 8px; }
@@ -89,9 +106,8 @@ HTML_TEMPLATE = """
         /* 结果表格 */
         .result-table th { background-color: #212529; color: #fff; text-align: center; vertical-align: middle; font-size: 0.85rem; }
         .result-table td { text-align: center; vertical-align: middle; font-size: 0.9rem; }
-        .price-main { font-weight: 800; font-size: 1.2rem; color: #d63384; } /* 醒目颜色 */
+        .price-main { font-weight: 800; font-size: 1.2rem; color: #d63384; }
         .zone-tag { display: inline-block; background: #0d6efd; color: #fff; padding: 2px 8px; border-radius: 4px; font-weight: bold; }
-        .surcharge-detail { font-size: 0.75rem; color: #666; text-align: left; line-height: 1.2; }
     </style>
 </head>
 <body>
@@ -100,7 +116,7 @@ HTML_TEMPLATE = """
     <div class="container d-flex justify-content-between align-items-center">
         <div>
             <h4 class="m-0 fw-bold">📦 业务员报价助手</h4>
-            <small style="opacity: 0.8;">T0-T3 全渠道精准集成 | 严格对标 6.0-6.3 文档</small>
+            <small style="opacity: 0.8; font-size: 0.8rem;">T0-T3 全渠道精准集成 | 严格对标 6.0-6.3 文档</small>
         </div>
         <div class="text-end">
             <a href="https://www.fedex.com/en-us/shipping/fuel-surcharge.html" target="_blank" class="btn btn-sm btn-outline-light">⛽ 查看 FedEx 实时燃油</a>
@@ -209,12 +225,11 @@ HTML_TEMPLATE = """
                         </table>
                     </div>
                     <div class="mt-3 text-muted" style="font-size: 0.75rem;">
-                        <strong>计费说明 (Issue 3)：</strong><br>
+                        <strong>计费说明：</strong><br>
                         1. 计费重公式：取 Max(实重, 体积重)。体积重系数统一为 222 (IN³/222 = LB)。<br>
-                        2. UniUni 渠道特殊规则：无体积重，按实重计费；无燃油费；无住宅费。<br>
-                        3. USPS 渠道特殊规则：无燃油费；无住宅费；含独立旺季附加费。<br>
-                        4. 住宅费：仅以 FedEx 开头的渠道收取，其他渠道默认为 0。<br>
-                        5. 燃油费：以 FedEx 官网为准，请手动更新费率。
+                        2. UniUni：无体积重，按实重计费；无燃油/住宅费。<br>
+                        3. USPS：无燃油/住宅费；含独立旺季附加费。<br>
+                        4. 住宅费：仅 FedEx 开头的渠道收取。<br>
                     </div>
                 </div>
             </div>
@@ -224,7 +239,7 @@ HTML_TEMPLATE = """
 
 <footer>
     <div class="container">
-        <p>&copy; 2026 速狗海外仓 | 内部专用工具</p>
+        <p>&copy; 2026 速狗海外仓 | 数据版本: GitHub Auto-Build</p>
     </div>
 </footer>
 
@@ -234,34 +249,40 @@ HTML_TEMPLATE = """
     document.getElementById('updateDate').innerText = new Date().toLocaleDateString();
 
     // ===========================================
-    // 核心业务逻辑配置 (Strict Rules)
+    // 核心业务逻辑配置
     // ===========================================
-    
-    // 1. 单位换算 (Issue 4) - 统一转为 IN 和 LB
+    const CHANNEL_CONFIG = {
+        hasResFee: function(name) {
+            let n = name.toUpperCase();
+            if (n.includes('USPS') || n.includes('XLMILES') || n.includes('UNIUNI')) return false;
+            return true; // 仅FedEx/GOFO等收
+        },
+        hasFuelFee: function(name) {
+            let n = name.toUpperCase();
+            if (n.includes('USPS') || n.includes('UNIUNI')) return false;
+            return true;
+        }
+    };
+
+    // 1. 单位换算
     function convertToStandard(l, w, h, dimUnit, weight, weightUnit) {
         let L = parseFloat(l)||0, W = parseFloat(w)||0, H = parseFloat(h)||0, Wt = parseFloat(weight)||0;
-        
-        // 长度转 inch
         if (dimUnit === 'cm') { L/=2.54; W/=2.54; H/=2.54; }
         else if (dimUnit === 'mm') { L/=25.4; W/=25.4; H/=25.4; }
         
-        // 重量转 lb
         if (weightUnit === 'kg') Wt /= 0.45359237;
         else if (weightUnit === 'oz') Wt /= 16;
         else if (weightUnit === 'g') Wt /= 453.59237;
-        
         return { L, W, H, Wt };
     }
 
-    // 2. 实时合规检测 (Traffic Light Module)
+    // 2. 实时合规检测
     function runPreCheck(pkg) {
         let dims = [pkg.L, pkg.W, pkg.H].sort((a,b)=>b-a);
         let longest = dims[0];
-        let median = dims[1];
         let girth = longest + 2*(dims[1]+dims[2]);
         let html = '';
 
-        // 辅助生成函数
         const checkItem = (label, condition, warnCondition=false) => {
             let color = condition ? 'status-fail' : (warnCondition ? 'status-warn' : 'status-ok');
             let text = condition ? '超标 (Over)' : (warnCondition ? '警告 (Warn)' : '正常 (OK)');
@@ -271,9 +292,7 @@ HTML_TEMPLATE = """
         html += checkItem('超重 (>150lb)', pkg.Wt > 150, pkg.Wt > 50);
         html += checkItem('超长 (>108")', longest > 108, longest > 96);
         html += checkItem('超围 (>165")', girth > 165, girth > 130);
-        html += checkItem('第二边 (>30")', median > 30);
         
-        // UniUni 特殊检查 (Issue 6)
         let uniFail = (longest > 20 || girth > 50 || pkg.Wt > 20);
         html += `<div class="border-top mt-1 pt-1 fw-bold small">UniUni 专有检查:</div>`;
         html += checkItem('符合 UniUni 限制', uniFail);
@@ -281,7 +300,7 @@ HTML_TEMPLATE = """
         document.getElementById('checkList').innerHTML = html;
     }
 
-    // 监听输入变化实时检测
+    // 监听输入
     ['length','width','height','weight','dimUnit','weightUnit'].forEach(id => {
         document.getElementById(id).addEventListener('input', () => {
             let pkg = convertToStandard(
@@ -292,34 +311,26 @@ HTML_TEMPLATE = """
         });
     });
 
-    // 3. 计费重计算 (Issue 3)
+    // 3. 计费重计算
     function getChargeWeight(pkg, channel) {
         let ch = channel.toUpperCase();
+        if (ch.includes('UNIUNI')) return pkg.Wt; // UniUni实重
         
-        // Rule: UniUni 只有实重
-        if (ch.includes('UNIUNI')) return pkg.Wt;
-
-        // Standard: Max(Actual, Volumetric). Divisor 222.
         let volWeight = (pkg.L * pkg.W * pkg.H) / 222;
         let finalWt = Math.max(pkg.Wt, volWeight);
-        
-        // GOFO的小件(OZ)不进位，其他通常向上取整
-        if (finalWt < 1 && ch.includes('GOFO')) return finalWt;
-        
+        if (finalWt < 1 && ch.includes('GOFO')) return finalWt; // GOFO小件不进位
         return Math.ceil(finalWt);
     }
 
-    // 4. 邮编查询 (Issue 1 & 4)
+    // 4. 邮编查询
     document.getElementById('btnLookup').onclick = function() {
         let zip = document.getElementById('zipCode').value.trim();
         let infoDiv = document.getElementById('locInfo');
-        
         if (!DATA.zip_db[zip]) { 
             infoDiv.innerHTML = "<span class='text-danger'>❌ 未找到该邮编 (Zip Not Found)</span>"; 
             CUR_ZONES = {}; 
             return; 
         }
-        
         let info = DATA.zip_db[zip];
         infoDiv.innerHTML = `<span class='text-success'>✅ ${info.s_cn} ${info.s} - ${info.c} [${info.r}]</span>`;
         CUR_ZONES = info.z;
@@ -339,11 +350,10 @@ HTML_TEMPLATE = """
         let isRes = document.getElementById('addressType').value === 'residential';
         let userFuelRate = parseFloat(document.getElementById('fuelRate').value) / 100;
 
-        // 显示摘要
         document.getElementById('resultSection').style.display = 'block';
         document.getElementById('resTierBadge').innerText = tier;
         document.getElementById('pkgSummary').innerHTML = 
-            `<b>计算基准:</b> ${pkg.L.toFixed(1)}"${pkg.W.toFixed(1)}"${pkg.H.toFixed(1)}" (IN) | 实重: ${pkg.Wt.toFixed(2)} LB | 围长: ${(pkg.L+2*(pkg.W+pkg.H)).toFixed(1)}"`;
+            `<b>计算基准:</b> ${pkg.L.toFixed(1)}"${pkg.W.toFixed(1)}"${pkg.H.toFixed(1)}" (IN) | 实重: ${pkg.Wt.toFixed(2)} LB`;
 
         let tbody = document.getElementById('resBody');
         tbody.innerHTML = '';
@@ -361,13 +371,12 @@ HTML_TEMPLATE = """
             let status = "正常";
             let rowColor = "";
 
-            // 价格匹配 (Issue 1)
             let foundRow = null;
             for (let row of chData.prices) {
                 if (row.w >= chargeWt - 0.001) { foundRow = row; break; }
             }
 
-            let zoneKey = zoneVal === '1' ? '2' : zoneVal; // Zone1映射到2
+            let zoneKey = zoneVal === '1' ? '2' : zoneVal;
             if (!foundRow || zoneVal === '-') {
                 status = "无分区/超重"; rowColor = "table-secondary";
             } else {
@@ -376,54 +385,42 @@ HTML_TEMPLATE = """
                 if (!basePrice) { status = "无报价"; basePrice = 0; rowColor = "table-warning"; }
             }
 
-            // --- 费用计算 ---
             let fees = { fuel:0, res:0, peak:0, other:0 };
             let breakdown = [];
 
             if (basePrice > 0) {
-                // 1. 燃油费 (Issue 2 & 3): 仅 FedEx 类收取
-                if (ch.toUpperCase().startsWith('FEDEX')) {
+                if (CHANNEL_CONFIG.hasFuelFee(ch)) {
                     fees.fuel = basePrice * userFuelRate;
                     breakdown.push(`燃油: $${fees.fuel.toFixed(2)}`);
                 }
-
-                // 2. 住宅费 (Issue 2): 仅 FedEx 类收取
-                if (isRes && ch.toUpperCase().startsWith('FEDEX')) {
+                if (isRes && CHANNEL_CONFIG.hasResFee(ch)) {
                     fees.res = DATA.surcharges.res_fee;
                     breakdown.push(`住宅: $${fees.res.toFixed(2)}`);
                 }
 
-                // 3. 尺寸判断
                 let dims = [pkg.L, pkg.W, pkg.H].sort((a,b)=>b-a);
                 let L=dims[0], G=L+2*(dims[1]+dims[2]);
                 let isOver = (L>96 || G>130);
                 let isUnauth = (L>108 || G>165 || pkg.Wt>150);
-                let isAHS = (L>48); // FedEx AHS
+                let isAHS = (L>48);
 
-                // 4. UniUni 严格限制 (Issue 6)
                 if (ch.toUpperCase().includes('UNIUNI')) {
-                    if (L>20 || G>50 || pkg.Wt>20) {
-                        status = "超规不可发"; rowColor = "table-danger"; basePrice=0;
-                    }
-                    // DFW/ORD 退件费提示仅在备注显示，不计入运费
+                    if (L>20 || G>50 || pkg.Wt>20) { status = "超规不可发"; rowColor = "table-danger"; basePrice=0; }
                 }
 
-                // 5. 附加费计算
                 if (status !== "超规不可发") {
                     if (isUnauth) { fees.other += DATA.surcharges.unauthorized_fee; status="Unauthorized"; rowColor="table-danger"; }
                     else if (isOver) { fees.other += DATA.surcharges.oversize_fee; status="Oversize"; rowColor="table-warning"; breakdown.push(`超大: $${DATA.surcharges.oversize_fee}`); }
                     else if (isAHS && ch.toUpperCase().startsWith('FEDEX')) { fees.other += DATA.surcharges.ahs_fee; breakdown.push(`AHS: $${DATA.surcharges.ahs_fee}`); }
                 }
 
-                // 6. 旺季费 (Issue 6)
                 if (isPeak) {
                     let p = 0;
                     if (ch.toUpperCase().includes('USPS')) {
-                        // USPS 旺季费简单逻辑 (0.25lb档位)
-                        p = 0.35; // 简化处理，实际需按重量分段
+                        p = 0.35; 
                         breakdown.push(`旺季(USPS): $${p}`);
                     } else {
-                        if (isRes && ch.toUpperCase().startsWith('FEDEX')) p += DATA.surcharges.peak_res;
+                        if (isRes && CHANNEL_CONFIG.hasResFee(ch)) p += DATA.surcharges.peak_res;
                         if (isOver) p += DATA.surcharges.peak_oversize;
                         if (isUnauth) p += DATA.surcharges.peak_unauthorized;
                         if (p>0) breakdown.push(`旺季: $${p.toFixed(2)}`);
@@ -434,13 +431,12 @@ HTML_TEMPLATE = """
 
             let total = basePrice + fees.fuel + fees.res + fees.peak + fees.other;
 
-            // 渲染行
             tbody.innerHTML += `
                 <tr class="${rowColor}">
-                    <td class="fw-bold text-start">${ch}</td>
+                    <td class="fw-bold text-start text-nowrap">${ch}</td>
                     <td><span class="zone-tag">${zoneVal}</span></td>
-                    <td>${chargeWt.toFixed(2)}</td>
-                    <td>${basePrice.toFixed(2)}</td>
+                    <td class="small">${chargeWt.toFixed(2)}<br><span class="text-muted" style="font-size:0.75em">(档:${foundRow?foundRow.w.toFixed(3):'-'})</span></td>
+                    <td class="fw-bold">${basePrice.toFixed(2)}</td>
                     <td class="text-start small">${breakdown.join('<br>') || '-'}</td>
                     <td class="price-main">$${total > 0 ? total.toFixed(2) : '-'}</td>
                     <td class="fw-bold small">${status}</td>
@@ -454,24 +450,25 @@ HTML_TEMPLATE = """
 """
 
 # ==========================================
-# 3. 核心逻辑: 数据解析 (LB 统一)
+# 3. 核心逻辑: Excel 解析 (增强版)
 # ==========================================
 
 def get_sheet_by_name(excel_file, target_name):
+    """读取Excel的特定Sheet，使用openpyxl引擎"""
     try:
         xl = pd.ExcelFile(excel_file, engine='openpyxl')
         if target_name in xl.sheet_names: 
             return pd.read_excel(xl, sheet_name=target_name, header=None)
         for sheet in xl.sheet_names:
             if target_name.replace(" ", "").lower() in sheet.replace(" ", "").lower():
-                print(f"    > [INFO] Sheet映射: '{sheet}' -> '{target_name}'")
+                print(f"    > [Sheet映射] '{sheet}' -> '{target_name}'")
                 return pd.read_excel(xl, sheet_name=sheet, header=None)
         return None
     except Exception: return None
 
 def load_zip_db():
     print("--- 1. 构建邮编数据库 (读取 T0.xlsx) ---")
-    path = os.path.join(DATA_DIR, TIERS_FILES['T0']) if 'TIERS_FILES' in globals() else os.path.join(DATA_DIR, TIER_FILES['T0'])
+    path = os.path.join(DATA_DIR, TIER_FILES['T0'])
     if not os.path.exists(path): 
         print(f"❌ 错误: 找不到文件 {path}"); return {}
     
@@ -493,7 +490,6 @@ def load_zip_db():
                     val = str(row[col]).strip()
                     zones[ch] = val if val not in ['-','nan','', 'None'] else None
                 
-                # 读取州名并获取中文
                 state_abbr = str(row[3]).strip().upper()
                 state_cn = US_STATES_CN.get(state_abbr, '')
                 
@@ -509,21 +505,14 @@ def load_zip_db():
     return zip_db
 
 def parse_weight_to_lb(val):
-    """
-    核心清洗函数 (Issue 1)
-    统一将 OZ, LB, KG 等转换为 LB 存入数据库
-    """
+    """核心清洗函数: 统一将 OZ, LB, KG 转换为 LB"""
     s = str(val).upper().strip()
     if pd.isna(val) or s == 'NAN': return None
-    
     nums = re.findall(r"[\d\.]+", s)
     if not nums: return None
     num = float(nums[0])
-    
-    # 识别单位并转换
     if 'OZ' in s: return num / 16.0
     if 'KG' in s: return num / 0.453592
-    # 默认按 LB
     return num
 
 def load_prices():
@@ -541,22 +530,17 @@ def load_prices():
             if df is None: continue
             
             try:
-                # 寻找表头
                 header_row = 0
                 for i in range(30):
                     row_str = " ".join(df.iloc[i].astype(str).values).lower()
                     if "zone" in row_str and ("lb" in row_str or "weight" in row_str or "重量" in row_str):
-                        header_row = i
-                        break
+                        header_row = i; break
                 
                 headers = df.iloc[header_row].astype(str).str.lower().tolist()
-                weight_idx = -1
-                zone_map = {} 
+                weight_idx = -1; zone_map = {} 
                 
                 for idx, val in enumerate(headers):
-                    if ('weight' in val or 'lb' in val or '重量' in val) and weight_idx == -1: 
-                        weight_idx = idx
-                    
+                    if ('weight' in val or 'lb' in val or '重量' in val) and weight_idx == -1: weight_idx = idx
                     z_match = re.search(r'zone\s*~?\s*(\d+)', val, re.IGNORECASE)
                     if z_match:
                         z_num = z_match.group(1)
@@ -569,7 +553,6 @@ def load_prices():
                     row = df.iloc[i]
                     try:
                         w_val = row[weight_idx]
-                        # 关键：统一转 LB
                         w_lb = parse_weight_to_lb(w_val)
                         if w_lb is None: continue
                         
@@ -577,16 +560,13 @@ def load_prices():
                         for z, col in zone_map.items():
                             try:
                                 val = row[col]
-                                if pd.notna(val) and str(val).replace('.','').isdigit():
-                                    p_row[z] = float(val)
+                                if pd.notna(val) and str(val).replace('.','').isdigit(): p_row[z] = float(val)
                             except: pass
                         prices.append(p_row)
                     except: continue
                 
-                # 排序
                 prices.sort(key=lambda x: x['w'])
                 tier_data[ch_key] = {"prices": prices}
-                
             except Exception: pass
         all_data[tier] = tier_data
     return all_data
