@@ -17,41 +17,36 @@ TIER_FILES = {
     "T0": "T0.xlsx", "T1": "T1.xlsx", "T2": "T2.xlsx", "T3": "T3.xlsx"
 }
 
-# 渠道 Sheet 匹配关键词 (精准匹配)
-# 逻辑：Sheet名必须包含列表中的【所有】关键词
+# 渠道关键词映射 (只要Sheet名包含列表中的词就算匹配)
 CHANNEL_KEYWORDS = {
     "GOFO-报价": ["GOFO", "报价"],
     "GOFO-MT-报价": ["GOFO", "MT"],
     "UNIUNI-MT-报价": ["UNIUNI"],
     "USPS-YSD-报价": ["USPS"],
-    "FedEx-ECO-MT报价": ["ECO", "MT"],
+    "FedEx-ECO-MT报价": ["ECO", "MT"], # 此渠道不收燃油
     "XLmiles-报价": ["XLmiles"],
     "GOFO大件-GRO-报价": ["GOFO", "大件"],
     "FedEx-632-MT-报价": ["632"],
-    "FedEx-YSD-报价": ["FedEx", "YSD"]  # 修复点：增加 FedEx 前缀，防止匹配到 USPS
+    "FedEx-YSD-报价": ["FedEx", "YSD"] # 必须同时包含
 }
 
 # 邮编库配置
-ZIP_DB_SHEET_KEY = "GOFO-报价"
+ZIP_DB_SHEET = "GOFO-报价"
 ZIP_COL_MAP = {
     "GOFO-报价": 5, "GOFO-MT-报价": 6, "UNIUNI-MT-报价": 7, "USPS-YSD-报价": 8,
     "FedEx-ECO-MT报价": 9, "XLmiles-报价": 10, "GOFO大件-GRO-报价": 11,
     "FedEx-632-MT-报价": 12, "FedEx-YSD-报价": 13
 }
 
-# 默认附加费 (修复了 fuel 缺失)
+# 基础附加费 (前端会覆盖，此处仅防报错)
 GLOBAL_SURCHARGES = {
-    "fuel": 0.16,          # 修复点：补回此键，防止 KeyError
-    "res_fee": 3.50, 
-    "peak_res": 1.32,
-    "peak_oversize": 54, 
-    "peak_unauthorized": 220,
-    "oversize_fee": 130, 
-    "ahs_fee": 20, 
-    "unauthorized_fee": 1150
+    "fuel": 0.16, 
+    "res_fee": 3.50, "peak_res": 1.32,
+    "peak_oversize": 54, "peak_unauthorized": 220,
+    "oversize_fee": 130, "ahs_fee": 20, "unauthorized_fee": 1150
 }
 
-# 州名
+# 州名映射
 US_STATES_CN = {
     'AL': '阿拉巴马', 'AK': '阿拉斯加', 'AZ': '亚利桑那', 'AR': '阿肯色', 'CA': '加利福尼亚',
     'CO': '科罗拉多', 'CT': '康涅狄格', 'DE': '特拉华', 'FL': '佛罗里达', 'GA': '佐治亚',
@@ -67,7 +62,7 @@ US_STATES_CN = {
 }
 
 # ==========================================
-# 2. 网页模板
+# 2. 网页模板 (集成V9逻辑)
 # ==========================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -75,7 +70,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>业务员报价助手 (Ultimate V8)</title>
+    <title>报价计算器 (Expert V9)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         :root { --primary-color: #0d6efd; --header-bg: #000; }
@@ -88,27 +83,28 @@ HTML_TEMPLATE = """
         .input-group-text { font-size: 0.85rem; font-weight: 600; background-color: #e9ecef; }
         .form-control, .form-select { font-size: 0.9rem; }
         .status-table { width: 100%; font-size: 0.85rem; }
-        .status-table td { padding: 6px; border-bottom: 1px solid #eee; vertical-align: middle; }
+        .status-table td { padding: 5px; border-bottom: 1px solid #eee; vertical-align: middle; }
         .indicator { display: inline-block; padding: 2px 8px; border-radius: 4px; color: #fff; font-weight: bold; font-size: 0.75rem; }
         .bg-ok { background-color: #198754; } .bg-warn { background-color: #ffc107; color:#000; } .bg-err { background-color: #dc3545; }
         .result-table th { background-color: #212529; color: #fff; text-align: center; font-size: 0.85rem; vertical-align: middle; }
         .result-table td { text-align: center; vertical-align: middle; font-size: 0.9rem; }
         .price-text { font-weight: 800; font-size: 1.1rem; color: #0d6efd; }
         .fuel-link { font-size: 0.75rem; text-decoration: none; color: #0d6efd; display: block; margin-top: 3px; }
+        .badge-zone { font-size: 0.85rem; background: #6c757d; color: #fff; padding: 2px 6px; border-radius: 4px; }
         #globalError { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 9999; width: 80%; display: none; }
     </style>
 </head>
 <body>
 
 <div id="globalError" class="alert alert-danger shadow-lg">
-    <h5 class="alert-heading">⚠️ 系统运行错误</h5>
+    <h5 class="alert-heading">⚠️ 程序运行异常</h5>
     <p id="errorMsg">未知错误</p>
 </div>
 
 <header>
     <div class="container d-flex justify-content-between align-items-center">
-        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 专家版 (V8.0)</small></div>
-        <div class="text-end text-white small">Multi-Channel Compliance Check</div>
+        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 专家版 (Fix V9)</small></div>
+        <div class="text-end text-white small">Strict Policy V9.0</div>
     </div>
 </header>
 
@@ -124,13 +120,13 @@ HTML_TEMPLATE = """
                             <div class="row g-2">
                                 <div class="col-6 border-end">
                                     <label class="form-label small">FedEx/USPS (%)</label>
-                                    <input type="number" class="form-control form-control-sm" id="fedexFuel" value="16.0">
+                                    <input type="number" class="form-control form-control-sm" id="genFuel" value="16.0">
                                     <a href="https://www.fedex.com.cn/en-us/shipping/historical-fuel-surcharge.html" target="_blank" class="fuel-link">🔗 FedEx燃油官网</a>
                                 </div>
                                 <div class="col-6">
                                     <label class="form-label small">GOFO大件 (%)</label>
                                     <input type="number" class="form-control form-control-sm" id="gofoFuel" value="15.0">
-                                    <span class="text-muted small d-block mt-1">GOFO大件独立</span>
+                                    <span class="text-muted small d-block mt-1">独立费率</span>
                                 </div>
                             </div>
                         </div>
@@ -170,7 +166,7 @@ HTML_TEMPLATE = """
                         <hr>
 
                         <div class="mb-3">
-                            <label class="form-label">包裹规格 (中文/原始单位)</label>
+                            <label class="form-label">包裹规格 (原始单位)</label>
                             <div class="row g-2">
                                 <div class="col-4"><div class="input-group input-group-sm"><span class="input-group-text">长</span><input type="number" class="form-control" id="length" placeholder="L"></div></div>
                                 <div class="col-4"><div class="input-group input-group-sm"><span class="input-group-text">宽</span><input type="number" class="form-control" id="width" placeholder="W"></div></div>
@@ -184,7 +180,7 @@ HTML_TEMPLATE = """
                         </div>
 
                         <div class="bg-light p-2 rounded border mb-3">
-                            <div class="fw-bold small mb-2 border-bottom">🚦 各渠道合规性一览</div>
+                            <div class="fw-bold small mb-2 border-bottom">🚦 渠道合规性预检</div>
                             <table class="status-table" id="checkTable">
                                 <tr><td class="text-muted">等待输入尺寸...</td></tr>
                             </table>
@@ -222,9 +218,9 @@ HTML_TEMPLATE = """
                     </div>
                     <div class="mt-2 text-muted small border-top pt-2">
                         <strong>计费逻辑说明：</strong><br>
-                        1. <strong>GOFO大件</strong>：(基础+附加费) * (1+燃油率)。独立燃油率。<br>
-                        2. <strong>FedEx ECO-MT</strong>：超长/超重/超大 三费取最大值 (Max-of-3)。<br>
-                        3. <strong>USPS</strong>：无燃油/住宅费。体积重>1728 in³ 时除以166。<br>
+                        1. <strong>GOFO大件</strong>：独立燃油率，公式: (运费+杂费)*(1+燃油)。<br>
+                        2. <strong>FedEx ECO-MT</strong>：不收燃油；超长/超重/超大 三项取最大值 (Max-of-3)。<br>
+                        3. <strong>USPS</strong>：收燃油(V9更正)；无住宅费；体积重>1728 in³ 时除以166。<br>
                         4. <strong>UniUni</strong>：实重计费，无燃油/住宅费。<br>
                     </div>
                 </div>
@@ -236,17 +232,23 @@ HTML_TEMPLATE = """
 <footer><div class="container"><p>&copy; 2026 速狗海外仓 | Update: <span id="updateDate"></span></p></div></footer>
 
 <script>
-    window.onerror = function(msg, u, l) { document.getElementById('globalError').style.display='block'; document.getElementById('errorMsg').innerText=`${msg} (Line ${l})`; };
+    // 错误捕获
+    window.onerror = function(msg, u, l) { 
+        document.getElementById('globalError').style.display='block'; 
+        document.getElementById('errorMsg').innerText=`${msg} (Line ${l})`; 
+        console.error(msg);
+    };
 </script>
 
 <script>
+    // 1. 数据加载
     let DATA = {};
-    try { DATA = __JSON_DATA__; } catch(e) { throw new Error("Data Init Failed"); }
+    try { DATA = __JSON_DATA__; } catch(e) { throw new Error("JSON Parse Error"); }
     let CUR_ZONES = {};
     document.getElementById('updateDate').innerText = new Date().toLocaleDateString();
 
     // ===================================
-    // 核心业务配置 (Expert Logic V8)
+    // V9 核心业务配置 (Expert Logic)
     // ===================================
     
     const USPS_BLOCK = ['006','007','008','009','090','091','092','093','094','095','096','097','098','099','340','962','963','964','965','966','967','968','969','995','996','997','998','999'];
@@ -255,18 +257,17 @@ HTML_TEMPLATE = """
     const ECO_FEES = {
         ahs: [6.55, 7.28, 8.03, 8.92],
         overweight: [10.26, 11.14, 11.89, 12.92],
-        oversize: [71.28, 77.97, 84.64, 91.33],
-        nonstd: [5.80, 6.84, 7.14, 7.43]
+        oversize: [71.28, 77.97, 84.64, 91.33]
     };
 
     const RULES = {
-        // 燃油费判断
+        // 燃油费判断 (根据最新指示: ECO-MT, GOFO小件, XL, Uni 不收; 其他收)
         hasFuel: n => {
             let u = n.toUpperCase();
-            if(u.includes('GOFO-报价') || u.includes('GOFO-MT') || u.includes('ECO-MT') || u.includes('XLMILES') || u.includes('UNIUNI')) return false;
-            return true;
+            if(u.includes('ECO-MT') || u.includes('GOFO-报价') || u.includes('GOFO-MT') || u.includes('XLMILES') || u.includes('UNIUNI')) return false;
+            return true; 
         },
-        // 住宅费判断
+        // 住宅费判断 (仅 FedEx 开头且非 ECO 收取)
         hasResFee: n => {
             let u = n.toUpperCase();
             return (u.includes('FEDEX') && !u.includes('ECO-MT')); 
@@ -295,31 +296,26 @@ HTML_TEMPLATE = """
         return {L,W,H,Wt:Weight};
     }
 
-    // 全渠道实时检测模块
+    // 全渠道检测
     function check(pkg) {
         let d=[pkg.L, pkg.W, pkg.H].sort((a,b)=>b-a);
         let L=d[0], G=L+2*(d[1]+d[2]);
         let h = '';
-        
         const row = (name, cond, text) => {
             let cls = cond ? 'bg-err' : 'bg-ok';
             let txt = cond ? text : '正常 (OK)';
             return `<tr><td>${name}</td><td class="text-end"><span class="indicator ${cls}"></span>${txt}</td></tr>`;
         };
 
-        // UniUni: 长>20, 围>50, 重>20
         let uFail = (L>20 || (L+d[1]+d[2])>50 || pkg.Wt>20);
         h += row('UniUni', uFail, '限制(L>20/Wt>20)');
 
-        // USPS: 重>70, 围长>130, 长>30
         let usFail = (pkg.Wt>70 || L>30 || (L+(d[1]+d[2])*2)>130);
         h += row('USPS', usFail, '限制(>70lb/130")');
 
-        // FedEx: 重>150, 长>108, 围>165
         let fFail = (pkg.Wt>150 || L>108 || G>165);
         h += row('FedEx', fFail, '不可发(>150lb)');
 
-        // GOFO大件: 重>150
         let gFail = (pkg.Wt>150);
         h += row('GOFO', gFail, '超限(>150lb)');
 
@@ -357,8 +353,8 @@ HTML_TEMPLATE = """
         let isPeak = document.getElementById('peakToggle').checked;
         let isRes = document.getElementById('addressType').value === 'res';
         
-        // 燃油费率获取
-        let fedexFuel = parseFloat(document.getElementById('fedexFuel').value)/100;
+        // 双燃油
+        let genFuel = parseFloat(document.getElementById('genFuel').value)/100;
         let gofoFuel = parseFloat(document.getElementById('gofoFuel').value)/100;
 
         document.getElementById('tierBadge').innerText = tier;
@@ -471,16 +467,16 @@ HTML_TEMPLATE = """
                     fees.p = p;
                 }
 
-                // 燃油费 (GOFO大件特殊公式)
+                // 燃油费 (V9 重点修复)
                 if(uCh.includes('GOFO大件')) {
-                    // 公式: (运费+所有附加费) * (1+燃油) - (运费+所有附加费) = 燃油部分
+                    // 公式: (运费+杂费) * (1+燃油) -> 燃油部分 = (运费+杂费)*燃油率
                     let subTotal = base + fees.r + fees.p + fees.o;
                     fees.f = subTotal * gofoFuel; 
                     details.push(`燃油(${gofoFuel*100}%):$${fees.f.toFixed(2)}`);
                 } else if(RULES.hasFuel(ch)) {
                     // 常规: 运费 * 燃油
-                    fees.f = base * fedexFuel;
-                    details.push(`燃油(${fedexFuel*100}%):$${fees.f.toFixed(2)}`);
+                    fees.f = base * genFuel;
+                    details.push(`燃油(${genFuel*100}%):$${fees.f.toFixed(2)}`);
                 }
             }
 
@@ -488,7 +484,7 @@ HTML_TEMPLATE = """
 
             tbody.innerHTML += `<tr class="${bg}">
                 <td class="fw-bold text-start text-nowrap">${ch}</td>
-                <td><span class="badge-zone">Zone ${zoneVal}</span></td>
+                <td><span class="badge-zone">Z${zoneVal}</span></td>
                 <td>${cWt.toFixed(2)}</td>
                 <td class="fw-bold">${base.toFixed(2)}</td>
                 <td class="text-start small" style="line-height:1.2">${details.join('<br>')||'-'}</td>
@@ -531,7 +527,6 @@ def load_zip_db():
     path = os.path.join(DATA_DIR, TIER_FILES['T0'])
     if not os.path.exists(path): return {}
     
-    # 特殊匹配 GOFO 报价表
     df = get_sheet_by_name(path, ["GOFO", "报价"])
     if df is None: return {}
 
@@ -617,6 +612,7 @@ if __name__ == '__main__':
     try: js_str = json.dumps(final, allow_nan=False)
     except: js_str = json.dumps(final).replace("NaN", "0")
     
+    # 修复 KeyError 的关键行
     html = HTML_TEMPLATE.replace('__JSON_DATA__', js_str).replace('__FUEL__', str(GLOBAL_SURCHARGES['fuel']*100))
     
     with open(os.path.join(OUTPUT_DIR, "index.html"), "w", encoding="utf-8") as f: f.write(html)
