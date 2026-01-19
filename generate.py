@@ -18,7 +18,6 @@ TIER_FILES = {
 }
 
 # 渠道 Sheet 匹配关键词 (精准匹配)
-# 逻辑：Sheet名必须包含列表中的【所有】关键词
 CHANNEL_KEYWORDS = {
     "GOFO-报价": ["GOFO", "报价"],
     "GOFO-MT-报价": ["GOFO", "MT"],
@@ -28,7 +27,7 @@ CHANNEL_KEYWORDS = {
     "XLmiles-报价": ["XLmiles"],
     "GOFO大件-GRO-报价": ["GOFO", "大件"],
     "FedEx-632-MT-报价": ["632"],
-    "FedEx-YSD-报价": ["FedEx", "YSD"]  # 修复点：增加 FedEx 前缀，防止匹配到 USPS
+    "FedEx-YSD-报价": ["FedEx", "YSD"]  # 包含 FedEx 和 YSD
 }
 
 # 邮编库配置
@@ -39,9 +38,9 @@ ZIP_COL_MAP = {
     "FedEx-632-MT-报价": 12, "FedEx-YSD-报价": 13
 }
 
-# 默认附加费 (修复了 fuel 缺失)
+# 默认附加费
 GLOBAL_SURCHARGES = {
-    "fuel": 0.16,          # 修复点：补回此键，防止 KeyError
+    "fuel": 0.16,
     "res_fee": 3.50, 
     "peak_res": 1.32,
     "peak_oversize": 54, 
@@ -75,7 +74,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>业务员报价助手 (Ultimate V8)</title>
+    <title>业务员报价助手 (Ultimate V9 - 中文兼容版)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         :root { --primary-color: #0d6efd; --header-bg: #000; }
@@ -107,7 +106,7 @@ HTML_TEMPLATE = """
 
 <header>
     <div class="container d-flex justify-content-between align-items-center">
-        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 专家版 (V8.0)</small></div>
+        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 专家版 (V9.0 中文兼容)</small></div>
         <div class="text-end text-white small">Multi-Channel Compliance Check</div>
     </div>
 </header>
@@ -136,12 +135,12 @@ HTML_TEMPLATE = """
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label">客户等级</label>
+                            <label class="form-label">客户等级 (切换自动计算)</label>
                             <div class="btn-group w-100" role="group">
                                 <input type="radio" class="btn-check" name="tier" id="t0" value="T0"><label class="btn btn-outline-secondary" for="t0">T0</label>
                                 <input type="radio" class="btn-check" name="tier" id="t1" value="T1"><label class="btn btn-outline-secondary" for="t1">T1</label>
                                 <input type="radio" class="btn-check" name="tier" id="t2" value="T2"><label class="btn btn-outline-secondary" for="t2">T2</label>
-                                <input type="radio" class="btn-check" name="tier" id="t3" value="T3" checked><label class="btn btn-outline-secondary" for="t3">T3</label>
+                          <input type="radio" class="btn-check" name="tier" id="t3" value="T3" checked><label class="btn btn-outline-secondary" for="t3">T3</label>
                             </div>
                         </div>
 
@@ -246,7 +245,16 @@ HTML_TEMPLATE = """
     document.getElementById('updateDate').innerText = new Date().toLocaleDateString();
 
     // ===================================
-    // 核心业务配置 (Expert Logic V8)
+    // 自动计算监听 (Fix: Auto-Run)
+    // ===================================
+    document.querySelectorAll('input[name="tier"]').forEach(r => {
+        r.addEventListener('change', () => { 
+            document.getElementById('btnCalc').click(); 
+        });
+    });
+
+    // ===================================
+    // 核心业务配置 (Expert Logic V9)
     // ===================================
     
     const USPS_BLOCK = ['006','007','008','009','090','091','092','093','094','095','096','097','098','099','340','962','963','964','965','966','967','968','969','995','996','997','998','999'];
@@ -503,7 +511,7 @@ HTML_TEMPLATE = """
 """
 
 # ==========================================
-# 3. 核心数据清洗
+# 3. 核心数据清洗 (增强版 - 中文兼容)
 # ==========================================
 
 def safe_float(val):
@@ -567,7 +575,7 @@ def to_lb(val):
     return n
 
 def load_tiers():
-    print("\n--- 2. 加载报价表 ---")
+    print("\n--- 2. 加载报价表 (中文兼容版) ---")
     all_tiers = {}
     for t_name, f_name in TIER_FILES.items():
         print(f"处理 {t_name}...")
@@ -579,18 +587,27 @@ def load_tiers():
             if df is None: continue
             try:
                 h_row = 0
+                # 寻找表头行: 兼容 中文 '重量', '分区' 及 英文 'weight', 'zone'
                 for i in range(50):
                     row_str = " ".join(df.iloc[i].astype(str).values).lower()
-                    if "zone" in row_str and ("weight" in row_str or "lb" in row_str): h_row = i; break
+                    has_zone = ("zone" in row_str or "分区" in row_str)
+                    has_weight = ("weight" in row_str or "lb" in row_str or "重量" in row_str)
+                    if has_zone and has_weight: h_row = i; break
+                
                 headers = df.iloc[h_row].astype(str).str.lower().tolist()
                 w_idx = -1; z_map = {}
+                
+                # 解析列名
                 for i, v in enumerate(headers):
-                    if ('weight' in v or 'lb' in v) and w_idx==-1: w_idx = i
-                    m = re.search(r'zone\s*~?\s*(\d+)', v)
+                    if ('weight' in v or 'lb' in v or '重量' in v) and w_idx==-1: w_idx = i
+                    # 正则匹配 Zone 1, 分区1
+                    m = re.search(r'(?:zone|分区)\s*~?\s*(\d+)', v)
                     if m: 
                         zn = m.group(1)
                         if zn not in z_map: z_map[zn] = i
+                
                 if w_idx == -1: continue
+                
                 prices = []
                 for i in range(h_row+1, len(df)):
                     row = df.iloc[i]
@@ -620,4 +637,4 @@ if __name__ == '__main__':
     html = HTML_TEMPLATE.replace('__JSON_DATA__', js_str).replace('__FUEL__', str(GLOBAL_SURCHARGES['fuel']*100))
     
     with open(os.path.join(OUTPUT_DIR, "index.html"), "w", encoding="utf-8") as f: f.write(html)
-    print("✅ 完成！")
+    print("✅ 完成！现在支持中文表头和自动计算了！")
