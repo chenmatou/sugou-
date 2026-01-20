@@ -27,10 +27,10 @@ CHANNEL_KEYWORDS = {
     "XLmiles-报价": ["XLmiles"],
     "GOFO大件-GRO-报价": ["GOFO", "大件"],
     "FedEx-632-MT-报价": ["632"],
-    "FedEx-YSD-报价": ["FedEx", "YSD"]
+    "FedEx-YSD-报价": ["FedEx", "YSD"]  # 包含 FedEx 和 YSD
 }
 
-# 邮编库配置（GOFO 报价下方独立邮编区域：保持不动，仍从 T0 的 GOFO-报价抽取）
+# 邮编库配置：仍以 GOFO-报价 下方的独立邮编区为主（按你的要求不动）
 ZIP_DB_SHEET_KEY = "GOFO-报价"
 ZIP_COL_MAP = {
     "GOFO-报价": 5, "GOFO-MT-报价": 6, "UNIUNI-MT-报价": 7, "USPS-YSD-报价": 8,
@@ -38,9 +38,8 @@ ZIP_COL_MAP = {
     "FedEx-632-MT-报价": 12, "FedEx-YSD-报价": 13
 }
 
-# 默认附加费
+# 默认附加费（作为前端兜底/通用项；USPS 旺季将改为“按表格查价”）
 GLOBAL_SURCHARGES = {
-    "fuel": 0.16,
     "res_fee": 3.50,
     "peak_res": 1.32,
     "peak_oversize": 54,
@@ -50,7 +49,7 @@ GLOBAL_SURCHARGES = {
     "unauthorized_fee": 1150
 }
 
-# 州名（用于中英文显示）
+# 州名
 US_STATES_CN = {
     'AL': '阿拉巴马', 'AK': '阿拉斯加', 'AZ': '亚利桑那', 'AR': '阿肯色', 'CA': '加利福尼亚',
     'CO': '科罗拉多', 'CT': '康涅狄格', 'DE': '特拉华', 'FL': '佛罗里达', 'GA': '佐治亚',
@@ -67,6 +66,15 @@ US_STATES_CN = {
 
 # ==========================================
 # 2. 网页模板
+#   - 关键变更点（按你的 3 条要求）：
+#     1) GOFO 邮编区不动：仍用 zip_db 提供各渠道 Zone
+#        但州/城市显示改为优先使用 zip_geo（可选外部“标准ZIP库”），fallback 到 zip_db
+#     2) 住宅/商业仅对指定 4 渠道生效：ECO-MT / FedEx-YSD / FedEx-632 / GOFO大件
+#     3) USPS 旺季附加费：从 DATA.usps_peak 表格按 (计费重, Zone) 查价叠加
+#     4) 燃油拆分：
+#        - USPS 燃油独立输入（默认 0，避免与 FedEx 混用）
+#        - 统一燃油仅适用 3 渠道：GOFO大件 / FedEx-YSD / FedEx-632
+#        - 其他渠道报价默认视为“已含燃油”，不再叠加燃油
 # ==========================================
 HTML_TEMPLATE = r"""
 <!DOCTYPE html>
@@ -95,7 +103,6 @@ HTML_TEMPLATE = r"""
         .price-text { font-weight: 800; font-size: 1.1rem; color: #0d6efd; }
         .fuel-link { font-size: 0.75rem; text-decoration: none; color: #0d6efd; display: block; margin-top: 3px; }
         #globalError { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 9999; width: 80%; display: none; }
-        .hint { font-size: 0.75rem; color: #6c757d; margin-top: 4px; line-height: 1.2; }
     </style>
 </head>
 <body>
@@ -123,14 +130,14 @@ HTML_TEMPLATE = r"""
                             <div class="fw-bold small mb-2 border-bottom">⛽ 燃油费率 (Fuel Surcharge)</div>
                             <div class="row g-2">
                                 <div class="col-6 border-end">
-                                    <label class="form-label small">统一燃油(%)</label>
+                                    <label class="form-label small">统一燃油 (%)</label>
                                     <input type="number" class="form-control form-control-sm" id="unifiedFuel" value="16.0">
-                                    <div class="hint">仅用于：GOFO大件 / FedEx-YSD / FedEx-632</div>
+                                    <span class="text-muted small d-block mt-1">仅：GOFO大件 / FedEx-YSD / FedEx-632</span>
                                 </div>
                                 <div class="col-6">
-                                    <label class="form-label small">USPS燃油(%)</label>
+                                    <label class="form-label small">USPS燃油 (%)</label>
                                     <input type="number" class="form-control form-control-sm" id="uspsFuel" value="0.0">
-                                    <div class="hint">仅用于 USPS-YSD；与 FedEx 分开</div>
+                                    <span class="text-muted small d-block mt-1">USPS独立（默认0）</span>
                                 </div>
                             </div>
                         </div>
@@ -152,16 +159,12 @@ HTML_TEMPLATE = r"""
                                 <button class="btn btn-dark" type="button" id="btnLookup">查询</button>
                             </div>
                             <div id="locInfo" class="mt-1 small fw-bold text-muted ps-1">请输入邮编查询...</div>
-                            <div class="hint">州/城市显示：优先使用美国标准邮编库（在线查询），失败则回退表内数据。</div>
                         </div>
 
                         <div class="row g-2 mb-3">
                             <div class="col-7">
                                 <label class="form-label">地址类型</label>
-                                <select class="form-select" id="addressType">
-                                    <option value="res">🏠 住宅 (Residential)</option>
-                                    <option value="com">🏢 商业 (Commercial)</option>
-                                </select>
+                                <select class="form-select" id="addressType"><option value="res">🏠 住宅 (Residential)</option><option value="com">🏢 商业 (Commercial)</option></select>
                             </div>
                             <div class="col-5 pt-4">
                                 <div class="form-check form-switch">
@@ -226,10 +229,10 @@ HTML_TEMPLATE = r"""
                     </div>
                     <div class="mt-2 text-muted small border-top pt-2">
                         <strong>计费逻辑说明：</strong><br>
-                        1. <strong>GOFO大件</strong>：(基础+附加费) * (1+燃油率)。燃油=统一燃油。<br>
-                        2. <strong>FedEx ECO-MT</strong>：超长/超重/超大 三费取最大值 (Max-of-3)。<br>
-                        3. <strong>USPS</strong>：旺季附加费按表格查价；燃油可独立设置（默认0）。<br>
-                        4. <strong>UniUni</strong>：实重计费，无燃油/住宅费。<br>
+                        1. <strong>USPS 旺季</strong>：开启旺季后，按“旺季附加费表格”按(计费重×Zone)查价叠加。<br>
+                        2. <strong>住宅费</strong>：仅对（ECO-MT / FedEx-YSD / FedEx-632 / GOFO大件）住宅地址叠加。<br>
+                        3. <strong>燃油</strong>：USPS 独立；统一燃油仅适用（GOFO大件 / FedEx-YSD / FedEx-632）；其他渠道默认已含燃油不再叠加。<br>
+                        4. <strong>FedEx ECO-MT</strong>：超长/超重/超大 三费取最大值 (Max-of-3)。<br>
                     </div>
                 </div>
             </div>
@@ -253,16 +256,14 @@ HTML_TEMPLATE = r"""
     document.getElementById('updateDate').innerText = new Date().toLocaleDateString();
 
     // ===================================
-    // 自动计算监听
+    // 自动计算监听 (Auto-Run)
     // ===================================
     document.querySelectorAll('input[name="tier"]').forEach(r => {
-        r.addEventListener('change', () => {
-            document.getElementById('btnCalc').click();
-        });
+        r.addEventListener('change', () => { document.getElementById('btnCalc').click(); });
     });
 
     // ===================================
-    // 核心业务配置
+    // 核心业务配置 (Expert Logic V9 - Revised)
     // ===================================
 
     const USPS_BLOCK = ['006','007','008','009','090','091','092','093','094','095','096','097','098','099','340','962','963','964','965','966','967','968','969','995','996','997','998','999'];
@@ -275,31 +276,39 @@ HTML_TEMPLATE = r"""
         nonstd: [5.80, 6.84, 7.14, 7.43]
     };
 
-    // 仅这 4 个渠道受住宅/商业影响（你点名要求）
-    function isResComChannel(name) {
-        let u = (name || '').toUpperCase();
-        return u.includes('FEDEX-ECO-MT') || u.includes('FEDEX-YSD') || u.includes('FEDEX-632') || u.includes('GOFO大件'.toUpperCase());
-    }
+    // 住宅费仅对指定渠道
+    const RES_FEE_CHANNELS = new Set([
+        'FedEx-ECO-MT报价',
+        'FedEx-YSD-报价',
+        'FedEx-632-MT-报价',
+        'GOFO大件-GRO-报价'
+    ]);
 
-    // 仅这 3 个渠道使用统一燃油（你点名要求）
-    function isUnifiedFuelChannel(name) {
-        let u = (name || '').toUpperCase();
-        return u.includes('GOFO大件'.toUpperCase()) || u.includes('FEDEX-YSD') || u.includes('FEDEX-632');
-    }
+    // 统一燃油仅对指定渠道
+    const UNIFIED_FUEL_CHANNELS = new Set([
+        'GOFO大件-GRO-报价',
+        'FedEx-632-MT-报价',
+        'FedEx-YSD-报价'
+    ]);
 
     const RULES = {
-        // 住宅费判断：仅作用于你点名的 4 个渠道
-        hasResFee: n => {
-            return isResComChannel(n);
-        },
         // 计费重除数
         getDivisor: (n, vol) => {
-            let u = (n || '').toUpperCase();
+            let u = (n||'').toUpperCase();
             if(u.includes('UNIUNI')) return 0;
             if(u.includes('USPS')) return vol > 1728 ? 166 : 0;
             if(u.includes('ECO-MT')) return vol < 1728 ? 400 : 250;
             return 222;
-        }
+        },
+        // USPS 独立燃油（不与 FedEx 混用）
+        hasUspsFuel: n => {
+            let u = (n||'').toUpperCase();
+            return u.includes('USPS');
+        },
+        // 统一燃油（仅 3 渠道）
+        hasUnifiedFuel: n => UNIFIED_FUEL_CHANNELS.has(n),
+        // 住宅费（仅 4 渠道）
+        hasResFee: n => RES_FEE_CHANNELS.has(n)
     };
 
     function getEcoZoneIdx(z) {
@@ -314,6 +323,28 @@ HTML_TEMPLATE = r"""
         if(du==='cm'){L/=2.54;W/=2.54;H/=2.54} else if(du==='mm'){L/=25.4;W/=25.4;H/=25.4}
         if(wu==='kg')Weight/=0.453592; else if(wu==='oz')Weight/=16; else if(wu==='g')Weight/=453.592;
         return {L,W,H,Wt:Weight};
+    }
+
+    // USPS 旺季附加费查表：按 (计费重, Zone) 取值
+    function getUspsPeakFee(cWt, zoneVal) {
+        if(!DATA.usps_peak || !Array.isArray(DATA.usps_peak) || DATA.usps_peak.length===0) return 0;
+        if(!zoneVal || zoneVal==='-' || zoneVal===null) return 0;
+        let z = String(zoneVal).trim();
+        if(z==='') return 0;
+
+        // 找到第一个 w >= cWt 的行（和主运价匹配逻辑一致）
+        let row = null;
+        for(let r of DATA.usps_peak) { if(r.w >= cWt-0.001) { row=r; break; } }
+        if(!row) return 0;
+
+        let v = row[z];
+        if(v===undefined || v===null) {
+            // 兼容：若 zoneVal='1' 但表头从 2 起，按 2 兜底（与主逻辑一致）
+            if(z==='1' && row['2']!==undefined) v = row['2'];
+        }
+        let fee = parseFloat(v);
+        if(!isFinite(fee) || fee<=0) return 0;
+        return fee;
     }
 
     // 全渠道实时检测模块
@@ -357,68 +388,23 @@ HTML_TEMPLATE = r"""
         })
     });
 
-    // USPS 旺季附加费查表
-    function getUspsPeakFee(zoneVal, chargeWtLb) {
-        if(!DATA.usps_peak || !Array.isArray(DATA.usps_peak) || DATA.usps_peak.length===0) return 0;
-        let zKey = (zoneVal==='1') ? '2' : zoneVal; // 与基础报价保持同一处理
-        for(let r of DATA.usps_peak) {
-            if(typeof r.w !== 'number') continue;
-            if(chargeWtLb <= r.w + 1e-9) {
-                let fee = r[zKey];
-                if(typeof fee === 'number' && fee > 0) return fee;
-                return 0;
-            }
-        }
-        return 0;
-    }
-
-    // 标准邮编库查询：用于州/城市展示（不影响 GOFO 独立邮编区和分区）
-    async function lookupStdZip(zip) {
-        try {
-            const resp = await fetch(`https://api.zippopotam.us/us/${zip}`, { cache: "no-store" });
-            if(!resp.ok) return null;
-            const j = await resp.json();
-            if(!j || !j.places || !j.places[0]) return null;
-            const p = j.places[0];
-            const stateAbbr = (p["state abbreviation"] || "").toUpperCase();
-            const city = (p["place name"] || "").trim();
-            return {
-                s: stateAbbr,
-                sn: (DATA && DATA.state_cn && DATA.state_cn[stateAbbr]) ? DATA.state_cn[stateAbbr] : (window.US_STATES_CN ? window.US_STATES_CN[stateAbbr] : ""),
-                c: city
-            };
-        } catch(e) {
-            return null;
-        }
-    }
-
-    // 由于模板里没有 window.US_STATES_CN，这里在运行时注入一份（来自后端 DATA.state_cn）
-    // DATA.state_cn 是 Python 输出的州中文映射（保证一致）
-    window.US_STATES_CN = DATA.state_cn || {};
-
-    document.getElementById('btnLookup').onclick = async () => {
+    document.getElementById('btnLookup').onclick = () => {
         let z = document.getElementById('zipCode').value.trim();
         let d = document.getElementById('locInfo');
 
         if(!DATA.zip_db || !DATA.zip_db[z]) {
-            d.innerHTML="<span class='text-danger'>❌ 未找到邮编（分区库缺失）</span>";
+            d.innerHTML="<span class='text-danger'>❌ 未找到邮编</span>";
             CUR_ZONES={};
             return;
         }
 
+        // Zones（各渠道分区）：仍来自 GOFO-报价 下方独立邮编区（不动）
         let i = DATA.zip_db[z];
         CUR_ZONES = i.z || {};
 
-        d.innerHTML = `<span class='text-muted'>⏳ 查询中...</span>`;
-
-        // 优先标准邮编库显示州/城市；失败回退表内数据
-        let std = await lookupStdZip(z);
-        if(std && std.s && std.c) {
-            let sn = window.US_STATES_CN[std.s] || '';
-            d.innerHTML = `<span class='text-success'>✅ ${sn} ${std.s} - ${std.c} [${i.r}]</span>`;
-        } else {
-            d.innerHTML = `<span class='text-success'>✅ ${i.sn} ${i.s} - ${i.c} [${i.r}]</span>`;
-        }
+        // 州/城市显示：优先使用 zip_geo（可选“标准ZIP库”），否则 fallback 到 zip_db
+        let g = (DATA.zip_geo && DATA.zip_geo[z]) ? DATA.zip_geo[z] : i;
+        d.innerHTML = `<span class='text-success'>✅ ${g.sn||''} ${g.s||''} - ${g.c||''}</span>`;
     };
 
     document.getElementById('btnCalc').onclick = () => {
@@ -433,18 +419,15 @@ HTML_TEMPLATE = r"""
         let isPeak = document.getElementById('peakToggle').checked;
         let isRes = document.getElementById('addressType').value === 'res';
 
-        // 燃油费率获取
+        // 燃油费率获取（拆分）
         let unifiedFuel = parseFloat(document.getElementById('unifiedFuel').value)/100;
         let uspsFuel = parseFloat(document.getElementById('uspsFuel').value)/100;
 
         document.getElementById('tierBadge').innerText = tier;
-
         let dims = [pkg.L, pkg.W, pkg.H].sort((a,b)=>b-a);
         let L=dims[0], G=L+2*(dims[1]+dims[2]);
 
-        document.getElementById('pkgSummary').innerHTML =
-            `<b>基准:</b> ${L.toFixed(1)}"${dims[1].toFixed(1)}"${dims[2].toFixed(1)}" | 实重:${pkg.Wt.toFixed(2)}lb | 围长:${G.toFixed(1)}"`;
-
+        document.getElementById('pkgSummary').innerHTML = `<b>基准:</b> ${L.toFixed(1)}"${dims[1].toFixed(1)}"${dims[2].toFixed(1)}" | 实重:${pkg.Wt.toFixed(2)}lb | 围长:${G.toFixed(1)}"`;
         let tbody = document.getElementById('resBody'); tbody.innerHTML='';
 
         if(!DATA.tiers || !DATA.tiers[tier]) {
@@ -457,26 +440,24 @@ HTML_TEMPLATE = r"""
             if(!prices || prices.length===0) return;
 
             let zoneVal = (CUR_ZONES && CUR_ZONES[ch]) ? CUR_ZONES[ch] : '-';
-            let uCh = (ch || '').toUpperCase();
+            let uCh = (ch||'').toUpperCase();
 
             let base=0, st="正常", cls="text-success", bg="";
             let cWt = pkg.Wt;
             let details = [];
 
-            // 1) 计费重
+            // 1. 计费重
             let div = RULES.getDivisor(ch, pkg.L*pkg.W*pkg.H);
             if(div > 0) {
                 let vWt = (pkg.L*pkg.W*pkg.H)/div;
                 cWt = Math.max(pkg.Wt, vWt);
             }
-            if(!uCh.includes('GOFO-报价'.toUpperCase()) && cWt>1) cWt = Math.ceil(cWt);
+            if(!uCh.includes('GOFO-报价') && cWt>1) cWt = Math.ceil(cWt);
 
-            // 2) 匹配基础价格
-            let zKey = (zoneVal==='1') ? '2' : zoneVal;
+            // 2. 匹配价格
+            let zKey = (zoneVal==='1') ? '2' : String(zoneVal);
             let row = null;
-            for(let r of prices) {
-                if(r.w >= cWt-0.001) { row=r; break; }
-            }
+            for(let r of prices) { if(r.w >= cWt-0.001) { row=r; break; } }
 
             if(!row || zoneVal==='-') {
                 st="无分区/超重"; cls="text-muted"; bg="table-light";
@@ -486,7 +467,7 @@ HTML_TEMPLATE = r"""
                 if(!base) { st="无报价"; cls="text-warning"; bg="table-warning"; base=0; }
             }
 
-            // 3) 特殊拦截
+            // 3. 特殊拦截
             if(uCh.includes('USPS')) {
                 if(USPS_BLOCK.some(p => zip.startsWith(p))) {
                     st="无折扣 (Std Rate)"; cls="text-danger"; bg="table-danger"; base=0;
@@ -501,11 +482,11 @@ HTML_TEMPLATE = r"""
                 }
             }
 
-            // 4) 费用叠加
+            // 4. 费用叠加
             let fees = {f:0, r:0, p:0, o:0};
 
             if(base > 0) {
-                // 4.1 住宅费：仅对你点名的 4 个渠道生效
+                // 4.1 住宅费：仅对指定 4 渠道
                 if(isRes && RULES.hasResFee(ch)) {
                     fees.r = DATA.surcharges.res_fee;
                     details.push(`住宅:$${fees.r}`);
@@ -513,7 +494,7 @@ HTML_TEMPLATE = r"""
 
                 // 4.2 FedEx ECO-MT Max-of-Three
                 if(uCh.includes('ECO-MT')) {
-                    let idx = getEcoZoneIdx(zoneVal);
+                    let idx = getEcoZoneIdx(String(zoneVal||''));
                     let f_ahs = (L>48 || dims[1]>30 || (L+G-L)>105) ? ECO_FEES.ahs[idx] : 0;
                     let f_ow = (pkg.Wt>50) ? ECO_FEES.overweight[idx] : 0;
                     let f_os = (G>108 && G<130) ? ECO_FEES.oversize[idx] : 0;
@@ -549,12 +530,13 @@ HTML_TEMPLATE = r"""
                 if(isPeak) {
                     let p=0;
 
-                    // USPS：按旺季附加费表格查价
+                    // USPS：严格按旺季附加费表格计算（计费重×Zone）
                     if(uCh.includes('USPS')) {
-                        p = getUspsPeakFee(zoneVal, cWt);
-                        if(p > 0) details.push(`旺季:$${p.toFixed(2)}`);
-                    } else {
-                        // 其他渠道保持原逻辑（不动）
+                        p = getUspsPeakFee(cWt, zoneVal);
+                        if(p>0) details.push(`旺季:$${p.toFixed(2)}`);
+                    }
+                    // 其他渠道：沿用原有旺季逻辑（住宅旺季/超大旺季）
+                    else {
                         if(isRes && RULES.hasResFee(ch)) p += DATA.surcharges.peak_res;
                         if(st.includes('Oversize')) p += DATA.surcharges.peak_oversize;
                         if(p>0) details.push(`旺季:$${p.toFixed(2)}`);
@@ -563,28 +545,28 @@ HTML_TEMPLATE = r"""
                     fees.p = p;
                 }
 
-                // 4.5 燃油
-                // 规则：
-                // - USPS：用 uspsFuel（与 FedEx 分开）
-                // - 仅 GOFO大件/FedEx-YSD/FedEx-632 用 unifiedFuel
-                // - 其他渠道视为“已含燃油”，不再叠加
-                if(uCh.includes('USPS')) {
+                // 4.5 燃油（拆分并限范围）
+                // USPS：独立燃油（不与 FedEx 混用）
+                if(RULES.hasUspsFuel(ch)) {
                     if(uspsFuel > 0) {
                         fees.f = base * uspsFuel;
                         details.push(`燃油(USPS ${uspsFuel*100}%):$${fees.f.toFixed(2)}`);
                     }
-                } else if(isUnifiedFuelChannel(ch)) {
-                    if(uCh.includes('GOFO大件'.toUpperCase())) {
-                        // GOFO大件： (运费+附加费) * (1+燃油) 里的燃油部分
+                }
+                // 统一燃油：仅适用 3 渠道（GOFO大件 / FedEx-YSD / FedEx-632）
+                else if(RULES.hasUnifiedFuel(ch)) {
+                    if(uCh.includes('GOFO大件')) {
+                        // GOFO大件仍使用“对(基础+附加)计燃油”的公式，但燃油率改为统一燃油
                         let subTotal = base + fees.r + fees.p + fees.o;
                         fees.f = subTotal * unifiedFuel;
-                        details.push(`燃油(统一 ${unifiedFuel*100}%):$${fees.f.toFixed(2)}`);
+                        if(unifiedFuel > 0) details.push(`燃油(统一 ${unifiedFuel*100}%):$${fees.f.toFixed(2)}`);
                     } else {
-                        // FedEx-YSD / FedEx-632：运费 * 统一燃油
+                        // 其他两条 FedEx 渠道：对基础运费计燃油（保持原结构）
                         fees.f = base * unifiedFuel;
-                        details.push(`燃油(统一 ${unifiedFuel*100}%):$${fees.f.toFixed(2)}`);
+                        if(unifiedFuel > 0) details.push(`燃油(统一 ${unifiedFuel*100}%):$${fees.f.toFixed(2)}`);
                     }
                 }
+                // 其余渠道：默认已含燃油，不再叠加
             }
 
             let tot = base + fees.f + fees.r + fees.p + fees.o;
@@ -606,7 +588,7 @@ HTML_TEMPLATE = r"""
 """
 
 # ==========================================
-# 3. 核心数据清洗
+# 3. 核心数据清洗 (增强版 - 中文兼容)
 # ==========================================
 
 def safe_float(val):
@@ -632,8 +614,8 @@ def get_sheet_by_name(excel_file, target_keys):
 
 def normalize_zone(val):
     """
-    修复：邮编库中的分区值若是数字格式，pandas 可能读成 float（如 1.0）。
-    前端查价用 key '1','2'...，若这里变成 '1.0' 则匹配不到。
+    修复：邮编库中的分区值若是数字格式，pandas 常读成 float（如 1.0）。
+    前端查价用的 key 是 '1','2'...，若这里变成 '1.0' 则永远匹配不到。
     """
     try:
         if pd.isna(val):
@@ -657,7 +639,12 @@ def normalize_zone(val):
         return s
 
 def load_zip_db():
-    print("--- 1. 加载邮编库（GOFO 报价下方独立邮编区，保持不动） ---")
+    """
+    依然从 T0 的 GOFO-报价 sheet 中抽取：
+    - 各渠道分区 zones（按你的要求：GOFO 报价下方独立邮编区不动）
+    - 同时携带州/城市字段（用于 fallback 显示）
+    """
+    print("--- 1. 加载邮编库（GOFO独立邮编区） ---")
     path = os.path.join(DATA_DIR, TIER_FILES['T0'])
     if not os.path.exists(path):
         return {}
@@ -669,7 +656,7 @@ def load_zip_db():
     db = {}
     try:
         start = 0
-        for i in range(100):
+        for i in range(200):
             cell = str(df.iloc[i, 1]).strip()
             if cell.isdigit() and len(cell) == 5:
                 start = i
@@ -697,6 +684,44 @@ def load_zip_db():
     print(f"✅ 邮编库: {len(db)} 条")
     return db
 
+def load_zip_geo(zip_db):
+    """
+    “美国标准地图邮编（州、城市；中英文显示）”的数据源说明：
+    - 你要求不动表；因此这里提供“可选标准库”机制：
+      若 data/us_zip_geo.csv 存在，则优先读取（建议列：zip, state, city）
+      否则 fallback 使用 zip_db 内已包含的州/城市（来自 GOFO 独立邮编区）
+    - 不改动现有表结构，只改 generate.py
+    """
+    print("\n--- 1.1 加载 ZIP 州/城市映射（优先标准库，否则fallback） ---")
+    geo = {}
+
+    std_csv = os.path.join(DATA_DIR, "us_zip_geo.csv")
+    if os.path.exists(std_csv):
+        try:
+            df = pd.read_csv(std_csv, dtype=str).fillna("")
+            # 兼容列名：zip/state/city
+            cols = {c.lower().strip(): c for c in df.columns}
+            zc = cols.get("zip") or cols.get("zipcode") or cols.get("postal_code")
+            sc = cols.get("state") or cols.get("st") or cols.get("state_code")
+            cc = cols.get("city") or cols.get("place") or cols.get("primary_city")
+            if zc and sc and cc:
+                for _, r in df.iterrows():
+                    z = str(r[zc]).strip().zfill(5)
+                    if z.isdigit() and len(z) == 5:
+                        st = str(r[sc]).strip().upper()
+                        city = str(r[cc]).strip()
+                        geo[z] = {"s": st, "sn": US_STATES_CN.get(st, ""), "c": city}
+                print(f"✅ 标准ZIP库: {len(geo)} 条（来源 us_zip_geo.csv）")
+                return geo
+        except Exception as e:
+            print(f"    > 标准ZIP库读取失败（将fallback）：{e}")
+
+    # fallback：从 zip_db 提取
+    for z, v in (zip_db or {}).items():
+        geo[z] = {"s": v.get("s", ""), "sn": v.get("sn", ""), "c": v.get("c", "")}
+    print(f"✅ fallback ZIP映射: {len(geo)} 条（来源 GOFO 邮编区）")
+    return geo
+
 def to_lb(val):
     s = str(val).upper().strip()
     if pd.isna(val) or s == 'NAN' or s == '':
@@ -711,8 +736,102 @@ def to_lb(val):
         return n / 0.453592
     return n
 
+def load_usps_peak_table():
+    """
+    从 T0 的 USPS-YSD-报价 sheet 中解析“旺季附加费”表格（计费重×Zone）。
+    输出结构：[{w:..., '1':..., '2':..., ...}, ...]  按 w 升序。
+    """
+    print("\n--- 1.2 解析 USPS 旺季附加费表格（按表格查价） ---")
+    path = os.path.join(DATA_DIR, TIER_FILES['T0'])
+    if not os.path.exists(path):
+        return []
+
+    df = get_sheet_by_name(path, ["USPS"])
+    if df is None:
+        return []
+
+    df = df.fillna("")
+    peak_rows = []
+
+    try:
+        # 1) 找到“旺季”区域附近的表头行
+        header_row = None
+        for i in range(0, min(300, len(df))):
+            row_str = " ".join(df.iloc[i].astype(str).values).lower()
+            if ("旺季" in row_str or "peak" in row_str) and ("zone" in row_str or "分区" in row_str):
+                # 继续向下找真正的列头行（含“重量/weight/lb”与“zone/分区”）
+                for j in range(i, min(i + 30, len(df))):
+                    s = " ".join(df.iloc[j].astype(str).values).lower()
+                    if (("重量" in s or "weight" in s or "lb" in s) and ("zone" in s or "分区" in s)):
+                        header_row = j
+                        break
+                if header_row is not None:
+                    break
+
+        if header_row is None:
+            # fallback：全表扫，找第一行同时含重量与zone
+            for i in range(0, min(300, len(df))):
+                s = " ".join(df.iloc[i].astype(str).values).lower()
+                if (("重量" in s or "weight" in s or "lb" in s) and ("zone" in s or "分区" in s)):
+                    header_row = i
+                    break
+
+        if header_row is None:
+            print("    > 未找到 USPS 旺季表头")
+            return []
+
+        headers = df.iloc[header_row].astype(str).str.lower().tolist()
+
+        w_idx = -1
+        z_map = {}
+        for idx, v in enumerate(headers):
+            if w_idx == -1 and (('weight' in v) or ('重量' in v) or ('lb' in v)):
+                w_idx = idx
+            m = re.search(r'(?:zone|分区)\s*~?\s*(\d+)', v)
+            if m:
+                zn = m.group(1)
+                if zn not in z_map:
+                    z_map[zn] = idx
+
+        if w_idx == -1 or len(z_map) == 0:
+            print("    > USPS 旺季表解析失败：缺少重量列或Zone列")
+            return []
+
+        # 2) 读取数据行：直到遇到空行/明显非数值重量
+        for r in range(header_row + 1, len(df)):
+            row = df.iloc[r]
+            lb = to_lb(row[w_idx])
+            if lb is None:
+                # 遇到连续空/无效行就停止（避免把下面其他表混进来）
+                # 如果行里仍含 zone 字样可能是分隔，不强停；这里用简单策略
+                line = " ".join(row.astype(str).values).strip().lower()
+                if line == "" or line.startswith("note") or ("旺季" in line and "附加" in line):
+                    continue
+                # 一旦开始收集后遇到非数值重量，停止
+                if len(peak_rows) > 0:
+                    break
+                continue
+
+            item = {"w": lb}
+            has_any = False
+            for z, c in z_map.items():
+                fee = safe_float(row[c])
+                if fee > 0:
+                    item[z] = fee
+                    has_any = True
+            if has_any:
+                peak_rows.append(item)
+
+        peak_rows.sort(key=lambda x: x["w"])
+        print(f"✅ USPS 旺季表: {len(peak_rows)} 行")
+        return peak_rows
+
+    except Exception as e:
+        print(f"    > USPS 旺季表解析异常: {e}")
+        return []
+
 def load_tiers():
-    print("\n--- 2. 加载报价表（中文兼容） ---")
+    print("\n--- 2. 加载报价表 (中文兼容版) ---")
     all_tiers = {}
     for t_name, f_name in TIER_FILES.items():
         print(f"处理 {t_name}...")
@@ -778,116 +897,20 @@ def load_tiers():
 
     return all_tiers
 
-def _find_row_contains(df, patterns, max_rows=200):
-    pats = [p.lower() for p in patterns]
-    for i in range(min(max_rows, len(df))):
-        row_str = " ".join(df.iloc[i].astype(str).values).lower()
-        if all(p in row_str for p in pats):
-            return i
-    return -1
-
-def load_usps_peak_table():
-    """
-    USPS-YSD-报价：旺季附加费必须严格按表格报价独立结合计算
-    读取 T0 的 USPS sheet 中 “旺季附加费”矩阵，输出为：
-    [
-      {"w": 1.0, "1":0.12, "2":0.12, ...},
-      {"w": 2.0, "1":0.12, "2":0.13, ...},
-      ...
-    ]
-    """
-    print("\n--- 2.1 解析 USPS 旺季附加费表 ---")
-    path = os.path.join(DATA_DIR, TIER_FILES['T0'])
-    if not os.path.exists(path):
-        return []
-
-    df = get_sheet_by_name(path, ["USPS"])
-    if df is None:
-        print("⚠️ 未找到 USPS sheet")
-        return []
-
-    df = df.fillna("")
-
-    # 先定位“旺季附加费”块（兼容中英文）
-    anchor = _find_row_contains(df, ["旺季", "附加费"], max_rows=400)
-    if anchor < 0:
-        anchor = _find_row_contains(df, ["peak", "surcharge"], max_rows=400)
-    if anchor < 0:
-        print("⚠️ 未定位到 USPS 旺季附加费块（将导致 USPS 旺季不生效）")
-        return []
-
-    # 从 anchor 往下找 header：包含“重量/不超过/weight” + “zone”
-    header_row = -1
-    for i in range(anchor, min(anchor + 40, len(df))):
-        row_str = " ".join(df.iloc[i].astype(str).values).lower()
-        has_w = ("weight" in row_str or "重量" in row_str or "不超过" in row_str)
-        has_z = ("zone" in row_str or "分区" in row_str)
-        if has_w and has_z:
-            header_row = i
-            break
-
-    if header_row < 0:
-        print("⚠️ USPS 旺季表：未找到表头行")
-        return []
-
-    headers = df.iloc[header_row].astype(str).str.lower().tolist()
-
-    # weight 列
-    w_idx = -1
-    z_map = {}
-    for i, v in enumerate(headers):
-        if w_idx == -1 and (("weight" in v) or ("重量" in v) or ("不超过" in v)):
-            w_idx = i
-        m = re.search(r'(?:zone|分区)\s*~?\s*(\d+)', v)
-        if m:
-            zn = m.group(1)
-            if zn not in z_map:
-                z_map[zn] = i
-
-    if w_idx == -1 or not z_map:
-        print("⚠️ USPS 旺季表：weight/zone 列解析失败")
-        return []
-
-    table = []
-    for i in range(header_row + 1, len(df)):
-        row = df.iloc[i]
-        # weight 上限（磅）可能是数字或文本
-        w = to_lb(row[w_idx])
-        if w is None:
-            # 遇到空行/新块，结束
-            row_str = " ".join(row.astype(str).values).strip()
-            if row_str == "" or row_str.lower() == "nan":
-                continue
-            # 若出现明显非数据区，尝试终止
-            if "旺季" in row_str or "附加费" in row_str:
-                continue
-            # 不是数字则跳过
-            continue
-
-        item = {"w": float(w)}
-        any_fee = False
-        for z, col in z_map.items():
-            fee = safe_float(row[col])
-            if fee > 0:
-                item[z] = fee
-                any_fee = True
-        if any_fee:
-            table.append(item)
-
-    table.sort(key=lambda x: x["w"])
-    print(f"✅ USPS 旺季表: {len(table)} 行")
-    return table
-
 if __name__ == '__main__':
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
 
+    zip_db = load_zip_db()
+    zip_geo = load_zip_geo(zip_db)     # 州/城市显示用（可选标准库）
+    usps_peak = load_usps_peak_table() # USPS 旺季附加费表（按表格查价）
+
     final = {
-        "zip_db": load_zip_db(),
+        "zip_db": zip_db,            # GOFO 独立邮编区：各渠道 Zone（不动）
+        "zip_geo": zip_geo,          # 州/城市映射：优先标准库，否则 fallback
+        "usps_peak": usps_peak,      # USPS 旺季附加费矩阵
         "tiers": load_tiers(),
-        "surcharges": GLOBAL_SURCHARGES,
-        "usps_peak": load_usps_peak_table(),
-        "state_cn": US_STATES_CN
+        "surcharges": GLOBAL_SURCHARGES
     }
 
     print("\n--- 3. 生成网页 ---")
@@ -901,4 +924,4 @@ if __name__ == '__main__':
     with open(os.path.join(OUTPUT_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)
 
-    print("✅ 完成！")
+    print("✅ 完成！已按要求：USPS 旺季按表查价、燃油拆分且限范围、住宅费仅对指定渠道、州/城市优先标准库。")
