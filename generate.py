@@ -1,4 +1,10 @@
-<!DOCTYPE html>
+# -*- coding: utf-8 -*-
+import os
+
+OUTPUT_DIR = "public"
+OUTPUT_FILE = os.path.join(OUTPUT_DIR, "index.html")
+
+HTML = r"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -17,21 +23,21 @@
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: var(--bg-color); padding: 20px; }
         .container { max-width: 1280px; margin: 0 auto; background: #fff; padding: 20px; box-shadow: 0 0 10px rgba(0,0,0,0.1); border-radius: 8px; }
         h2, h3 { color: #333; border-bottom: 2px solid var(--primary-color); padding-bottom: 10px; }
-
+        
         /* 布局 */
         .grid-section { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 15px; margin-bottom: 20px; }
         .control-group { margin-bottom: 12px; }
         label { display: block; margin-bottom: 5px; font-weight: bold; font-size: 13px; }
         input, select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
-
+        
         /* 燃油费 */
         .fuel-row { display: flex; gap: 10px; align-items: flex-end; }
         .fuel-input-box { flex: 1; }
         .fuel-link { font-size: 11px; margin-top: 3px; display: block; text-decoration: none; color: var(--primary-color); }
-
+        
         /* 按钮与开关区域 (紧凑设计) */
-        .action-bar {
-            display: flex; flex-wrap: wrap; gap: 20px; align-items: center;
+        .action-bar { 
+            display: flex; flex-wrap: wrap; gap: 20px; align-items: center; 
             background: #fff5f5; padding: 10px; border: 1px solid #ffdcdc; border-radius: 8px; margin-bottom: 20px;
         }
         .toggle-item { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
@@ -59,7 +65,7 @@
         .main-table th { background-color: var(--primary-color); color: white; }
         .main-table tr:nth-child(even) { background-color: #f9f9f9; }
         .highlight-zone { background-color: var(--highlight-color) !important; border: 2px solid #ffc107 !important; font-weight: bold; }
-
+        
         /* 信息面板 */
         .location-panel { background: #e3f2fd; border: 1px solid #90caf9; padding: 8px; border-radius: 4px; margin-top: 5px; font-size: 12px; color: #0d47a1; display: none; }
         .status-panel { grid-column: 1 / -1; background: #fff; border: 1px solid #ddd; padding: 8px; border-radius: 4px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -114,12 +120,12 @@
                 <option value="6.3" selected>6.3 - 常规报价 (T3)</option>
             </select>
         </div>
-
+        
         <div class="control-group">
             <label>收件邮编 (Destination Zip)</label>
             <input type="text" id="zipCode" placeholder="输入5位邮编 (如 10001)" oninput="detectZone()" maxlength="5">
             <div id="locationInfoBox" class="location-panel">
-                <span style="font-weight:bold">📍 地点:</span> <span id="loc_state">--</span><br>
+                <span style="font-weight:bold">📍 地点:</span> <span id="loc_state">--</span><br> 
                 <span style="font-weight:bold">🚚 分区:</span> <span id="loc_zone" style="color:#d9534f; font-weight:bold; font-size:1.1em">--</span><br>
                 <span id="loc_type" style="color:#666"></span>
             </div>
@@ -257,7 +263,7 @@
     }
     initOpTable();
 
-    // --- 2. 增强版分区逻辑 (API + 离线兜底) ---
+    // --- 2. 分区逻辑 (参考你给的代码：仓库切换用 calculateZoneMath) ---
 
     function getStateFallback(prefix) {
         const p = parseInt(prefix);
@@ -274,6 +280,7 @@
         if (!destZip || destZip.length < 3) return 8;
         const p = parseInt(destZip.substring(0, 3));
 
+        // 偏远
         if ((p >= 967 && p <= 969) || (p >= 995 && p <= 999) || (destZip.startsWith('00'))) return 9;
 
         if (originType === '917') {
@@ -284,8 +291,7 @@
             if (p >= 840 && p <= 884) return 4;
             if (p >= 500 && p <= 799) return 6;
             if (p >= 0 && p <= 499) return 8;
-        }
-        else if (originType === '606') {
+        } else if (originType === '606') {
             if (p >= 600 && p <= 629) return 2;
             if (p >= 460 && p <= 569) return 3;
             if (p >= 400 && p <= 459) return 4;
@@ -294,8 +300,7 @@
             if (p >= 800 && p <= 899) return 6;
             if (p >= 0 && p <= 199) return 7;
             if (p >= 900 && p <= 966) return 8;
-        }
-        else if (originType === '088') {
+        } else if (originType === '088') {
             if (p >= 70 && p <= 89) return 2;
             if (p >= 0 && p <= 69) return 3;
             if (p >= 150 && p <= 199) return 3;
@@ -318,10 +323,12 @@
         if (zip.length >= 3) {
             panel.style.display = 'block';
 
+            // 1) 快速本地分区
             let z = calculateZoneMath(zip, origin);
             detectedZoneVal = z;
             document.getElementById('loc_zone').innerText = `Zone ${z}`;
 
+            // 2) 状态提示
             let typeHint = "地址类型: 默认住宅";
             if (z === 9) {
                 typeHint = "⚠️ 偏远/海岛地区";
@@ -331,6 +338,7 @@
             }
             document.getElementById('loc_type').innerText = typeHint;
 
+            // 3) 5位邮编时，调用公共API显示州/城市（保持你原逻辑不动）
             if (zip.length === 5) {
                 document.getElementById('loc_state').innerText = "📍 查询中...";
                 if(locationRequestTimer) clearTimeout(locationRequestTimer);
@@ -346,6 +354,7 @@
                             const city = place['place name'];
                             const state = place['state abbreviation'];
                             document.getElementById('loc_state').innerText = `${state} - ${city}`;
+                            // 再次核对偏远
                             if(state === 'HI' || state === 'AK' || state === 'PR') {
                                 detectedZoneVal = 9;
                                 document.getElementById('loc_zone').innerText = "Zone 9 (偏远)";
@@ -354,7 +363,7 @@
                                 document.getElementById('loc_zone').style.color = "#d9534f";
                             }
                         })
-                        .catch(err => {
+                        .catch(() => {
                             document.getElementById('loc_state').innerText = getStateFallback(zip.substring(0,3));
                         });
                 }, 300);
@@ -467,8 +476,10 @@
         liveCalc();
     }
 
-    // --- 4. 最终计算 ---
+    // --- 4. 最终计算（只调整计算逻辑：燃油不混用，且只有指定渠道叠加燃油） ---
+
     function getShippingRate(carrier, weight, zone, tier) {
+        // 你原逻辑：示意费率（如要接入真实费率表，再替换这里的 base 逻辑）
         let base = 0;
         if(carrier === 'USPS') base = 4.0 + (weight*0.4) + (zone*0.5);
         if(carrier === 'FedEx') base = 8.5 + (weight*0.75) + (zone*0.9);
@@ -504,9 +515,7 @@
                 <td><span style="color:${getComputedStyle(document.documentElement).getPropertyValue('--purple-color')}">无运费<br>客户自备账号</span></td>
             `;
             let totalSelfPrice = (outFee + selfFee).toFixed(2);
-            for(let z=1; z<=9; z++) {
-                tr.innerHTML += `<td style="font-weight:bold; color:#333">$${totalSelfPrice}</td>`;
-            }
+            for(let z=1; z<=9; z++) tr.innerHTML += `<td style="font-weight:bold; color:#333">$${totalSelfPrice}</td>`;
             tbody.appendChild(tr);
             return;
         }
@@ -515,15 +524,15 @@
         const fuelRateFedEx = parseFloat(document.getElementById('fuelFedEx').value) / 100;
         const fuelRateUSPS = parseFloat(document.getElementById('fuelUSPS').value) / 100;
 
-        // 仅“明确需要燃油叠加”的渠道才叠加燃油：
-        // - FedEx：使用 FedEx 燃油
-        // - USPS：使用 USPS 燃油
-        // - UniUni/GOFO：视为报价已含燃油（不再叠加燃油）
+        // 渠道燃油规则（关键调整点）
+        // - FedEx：用 FedEx 燃油（叠加）
+        // - USPS：用 USPS 燃油（叠加）
+        // - UniUni/GOFO：视为报价已含燃油（不再叠加）
         const CARRIER_RULES = {
             'FedEx': { fuel: () => fuelRateFedEx, applyFuel: true },
             'USPS': { fuel: () => fuelRateUSPS, applyFuel: true },
             'UniUni': { fuel: () => 0, applyFuel: false },
-            'GOFO': { fuel: () => 0, applyFuel: false }
+            'GOFO':  { fuel: () => 0, applyFuel: false }
         };
 
         let surcharges = {
@@ -564,16 +573,11 @@
                         if (isAHS) extra += surcharges.ahs_size;
                         if (isOver50) extra += surcharges.overweight;
                     }
-                    if (c.id === 'USPS') {
-                        extra += surcharges.usps_peak;
-                    }
+                    if (c.id === 'USPS') extra += surcharges.usps_peak;
                 } else {
                     if (c.id === 'FedEx' && isRes) extra += surcharges.fedex_res;
                 }
 
-                // 计算规则：
-                // - applyFuel=true： (运费+附加) * (1+燃油) + 操作费
-                // - applyFuel=false： (运费+附加) + 操作费
                 let sub = (baseRate + extra);
                 let total = (rule.applyFuel ? (sub * (1 + currentFuel)) : sub) + outFee;
 
@@ -590,3 +594,13 @@
 
 </body>
 </html>
+"""
+
+def main():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        f.write(HTML)
+    print(f"OK: wrote {OUTPUT_FILE}")
+
+if __name__ == "__main__":
+    main()
