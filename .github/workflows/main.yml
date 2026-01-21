@@ -2,11 +2,11 @@ name: Deploy Quote Tool
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
   schedule:
-    - cron: "0 2 * * *" # 每天 UTC 02:00 跑一次（需要可自行改）
+    # 每天跑一次（UTC 01:30 = 北京时间 09:30）
+    - cron: "30 1 * * *"
 
 permissions:
   contents: write
@@ -15,28 +15,28 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code (拉取代码)
+      - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Set up Python (设置Python环境)
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: "3.9"
 
       - name: Install system deps (pdftotext)
         run: |
           sudo apt-get update
           sudo apt-get install -y poppler-utils
 
-      - name: Install dependencies (安装依赖库)
+      - name: Install python deps
         run: |
           pip install pandas openpyxl
 
-      - name: Run Generator (执行生成脚本)
+      - name: Run Generator
         run: |
           python generate.py
 
-      - name: Deploy to GitHub Pages (发布到网页)
+      - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
