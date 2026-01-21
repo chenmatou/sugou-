@@ -93,18 +93,13 @@ def fetch_fedex_residential_peak_table():
         req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
         html = urlopen(req, timeout=15).read().decode("utf-8", errors="ignore")
 
-        # 粗暴但稳定：定位该段标题附近的金额
-        # 页面文本中有：FedEx Ground residential shipments... 然后依次出现 $0.40 $0.65 $0.40 和日期段
         if "FedEx Ground residential shipments" not in html:
             return fallback
 
-        # 抓三段金额（按出现顺序）
-        # 只取这一块附近的片段减少误匹配
         idx = html.find("FedEx Ground residential shipments")
         snippet = html[idx: idx + 5000]
 
         amts = re.findall(r"\$([0-9]+\.[0-9]{2})", snippet)
-        # 该段前面还有别的 surcharge 金额，需进一步收敛：在该段之后最先出现的 3 个小额（<5）通常是 0.40/0.65/0.40
         small = []
         for a in amts:
             v = float(a)
@@ -115,8 +110,6 @@ def fetch_fedex_residential_peak_table():
         if len(small) < 3:
             return fallback
 
-        # 日期段：直接按 FedEx 页面写死这三段（页面上就是这三段）
-        # 若未来 FedEx 改了日期，金额也会变；日期可后续再做更严格解析，这里先满足“自动更新金额”
         return {
             "type": "fixed_by_date",
             "source": url,
@@ -257,6 +250,16 @@ HTML_TEMPLATE = """
                             <div class="small text-muted">仅：FedEx-YSD / FedEx-632-MT / XLmiles</div>
                         </div>
 
+                        <!-- ✅ XLmiles 一票多件：用于按“第一件取大值，其他件半价”计算 -->
+                        <div class="mb-3">
+                            <label class="form-label">XLmiles 一票多件（可选）</label>
+                            <input type="text" class="form-control" id="xlMultiFees"
+                                   placeholder="同票其他件的 XLmiles 基础费（$），逗号分隔，如：33,65,104">
+                            <div class="small text-muted mt-1">
+                                规则：第一件取最大值全额，其余件半价（适用于 AH/OS/OM 混合的一票多件）。
+                            </div>
+                        </div>
+
                         <hr>
 
                         <div class="mb-3">
@@ -331,10 +334,10 @@ HTML_TEMPLATE = """
                         2. <strong>住宅费</strong>：仅 FedEx-YSD($3.80) / FedEx-632($2.88) / GOFO大件($3.17)。<br>
                         3. <strong>签名费</strong>：仅 FedEx-YSD($9.30) / FedEx-632($4.46) / XLmiles($11.05)，由开关控制是否叠加。<br>
                         4. <strong>FedEx 标准渠道 Zone</strong>：FedEx-YSD / FedEx-632 / FedEx-ECO-MT 使用“仓库+邮编”计算 Zone（不再依赖 GOFO 邮编区）。<br>
-                        5. <strong>XLmiles</strong>：按 AH/OS/OM 三类服务规则计算，Zone 仅支持 1-2 / 3（>3 默认不可用）。<br>
+                        5. <strong>XLmiles</strong>：单件按 AH/OS/OM 规则定档；一票多件按“最大值全额 + 其余半价”计算（可选输入）。<br>
                         <div class="mt-2">
                             <strong>XLmiles 注意事项：</strong><br>
-                            LA,NJ,HOU 核心区域免费揽收；实时包裹追踪；POD 在我司系统一键获取；对标 Threshold 等级服务，投递至前门/后门/车库门。
+                            一口价：包含保价、预约及签收证明等服务；LA,NJ,HOU 核心区域免费揽收；实时包裹追踪；POD 在我司系统一键获取；对标 Threshold 等级服务，投递至前门/后门/车库门。
                         </div>
                     </div>
 
@@ -359,7 +362,6 @@ HTML_TEMPLATE = """
 
     document.getElementById('updateDate').innerText = new Date().toLocaleDateString();
 
-    // 显示 FedEx 旺季元信息
     (function(){
         let meta = DATA.fedex_res_peak || {};
         let s = (meta.source || 'n/a');
@@ -377,6 +379,7 @@ HTML_TEMPLATE = """
     document.getElementById('addressType').addEventListener('change', () => document.getElementById('btnCalc').click());
     document.getElementById('peakToggle').addEventListener('change', () => document.getElementById('btnCalc').click());
     document.getElementById('sigToggle').addEventListener('change', () => document.getElementById('btnCalc').click());
+    document.getElementById('xlMultiFees').addEventListener('input', () => document.getElementById('btnCalc').click());
 
     // ===================================
     // 渠道可用仓库（写死）
@@ -405,10 +408,8 @@ HTML_TEMPLATE = """
         if(!destZip || destZip.length < 3) return 8;
         let p = parseInt(destZip.substring(0,3), 10);
 
-        // 偏远/海岛
         if ((p >= 967 && p <= 969) || (p >= 995 && p <= 999) || destZip.startsWith('00')) return 9;
 
-        // wh -> originType
         let originType = (wh==="WEST") ? "917" : (wh==="CENTRAL" ? "606" : "088");
 
         if (originType === '917') {
@@ -428,7 +429,7 @@ HTML_TEMPLATE = """
             if (p >= 800 && p <= 899) return 6;
             if (p >= 0 && p <= 199) return 7;
             if (p >= 900 && p <= 966) return 8;
-        } else { // 088
+        } else {
             if (p >= 70 && p <= 89) return 2;
             if (p >= 0 && p <= 69) return 3;
             if (p >= 150 && p <= 199) return 3;
@@ -450,66 +451,54 @@ HTML_TEMPLATE = """
     const USPS_BLOCK = ['006','007','008','009','090','091','092','093','094','095','096','097','098','099','340','962','963','964','965','966','967','968','969','995','996','997','998','999'];
 
     // ===================================
-    // XLmiles 规则（按你给的说明）
-    // Zone：仅 1-2/3；>3 视为不可用
+    // XLmiles 规则（修正：单件只能归类 AH/OS/OM 其一；一票多件才用“最大值全额+其余半价”）
+    // Zone：仅 1-2 / 3；>3 默认不可用
     // ===================================
     function xl_zone_group(z){
         if(z===1 || z===2) return "1-2";
         if(z===3) return "3";
         return null;
     }
-    function xl_services_price(pkg, xlZone){
-        // pkg: {L,W,H,Wt} in inches/lb
-        // 计算围长 G = L + 2*(W+H)，L 为最长边
+
+    function xl_single_piece_price(pkg, xlZone){
+        // pkg in inches/lb
         let dims = [pkg.L, pkg.W, pkg.H].sort((a,b)=>b-a);
         let L = dims[0];
         let G = L + 2*(dims[1]+dims[2]);
-
-        // AH：L<=96 且 G<=130，Wt<=90 或 <=150
-        // OS：L<=108 且 G<=165，Wt<=150
-        // OM：L<=144 且 G<=225，Wt<=200
-        // 价格（按你给的）：
-        // AH <=90: Z1-2 33, Z3 36；AH <=150: Z1-2 52, Z3 56
-        // OS <=150: Z1-2 65, Z3 69
-        // OM <=200: Z1-2 104, Z3 117
         let zone = xlZone; // "1-2" or "3"
-        let ah = null, os = null, om = null;
 
+        // 档位判定：从小到大，命中即返回（单件只取一个服务）
+        // AH：L<=96 且 G<=130；Wt<=90 或 <=150 两档
         if(L<=96 && G<=130){
-            if(pkg.Wt<=90) ah = (zone==="1-2") ? 33 : 36;
-            else if(pkg.Wt<=150) ah = (zone==="1-2") ? 52 : 56;
+            if(pkg.Wt<=90) return {ok:true, svc:"AH", base:(zone==="1-2")?33:36, L, G};
+            if(pkg.Wt<=150) return {ok:true, svc:"AH", base:(zone==="1-2")?52:56, L, G};
         }
+        // OS：L<=108 且 G<=165；Wt<=150
         if(L<=108 && G<=165 && pkg.Wt<=150){
-            os = (zone==="1-2") ? 65 : 69;
+            return {ok:true, svc:"OS", base:(zone==="1-2")?65:69, L, G};
         }
+        // OM：L<=144 且 G<=225；Wt<=200
         if(L<=144 && G<=225 && pkg.Wt<=200){
-            om = (zone==="1-2") ? 104 : 117;
+            return {ok:true, svc:"OM", base:(zone==="1-2")?104:117, L, G};
         }
 
-        // 若都不满足 => 不可用
-        if(ah===null && os===null && om===null){
-            return {ok:false, reason:"超规不可发", details:[], base:0};
-        }
+        return {ok:false, reason:"超规不可发", base:0, L, G};
+    }
 
-        // 组合计费：若同时包含 AH/OS/OM 的产品，你给的是“分摊+叠加”示例。
-        // 这里按“若同时满足多档，按较高档为主”会偏保守；但你明确给了分摊公式，所以按以下策略：
-        // - AH 与 OS 同时可选：各 50%
-        // - OM 若可选：全额叠加（按你示例 OM 全额 + AH*0.5 + OS*0.5）
-        let base = 0;
-        let details = [];
-        if(ah!==null && os!==null){
-            base += ah*0.5; details.push(`AH*0.5=$${(ah*0.5).toFixed(2)}`);
-            base += os*0.5; details.push(`OS*0.5=$${(os*0.5).toFixed(2)}`);
-        } else if(ah!==null){
-            base += ah; details.push(`AH=$${ah.toFixed(2)}`);
-        } else if(os!==null){
-            base += os; details.push(`OS=$${os.toFixed(2)}`);
-        }
-        if(om!==null){
-            base += om; details.push(`OM=$${om.toFixed(2)}`);
-        }
+    function xl_apply_multi_piece(currentBase, othersArr){
+        // 规则：第一件取最大值全额，其余件半价（适用于一票多件）
+        let list = [currentBase].concat(othersArr || []).filter(v => typeof v === "number" && isFinite(v) && v > 0);
+        if(list.length <= 1) return {isMulti:false, total:currentBase, detail:null};
 
-        return {ok:true, reason:"正常", details, base};
+        let maxV = Math.max(...list);
+        let sumOthers = list.reduce((a,b)=>a+b,0) - maxV;
+        let total = maxV + 0.5 * sumOthers;
+
+        return {
+            isMulti:true,
+            total: total,
+            detail: {maxV, sumOthers, count:list.length}
+        };
     }
 
     // ===================================
@@ -523,7 +512,7 @@ HTML_TEMPLATE = """
     }
 
     // ===================================
-    // 合规性一览（新增 XLmiles）
+    // 合规性一览（XLmiles）
     // ===================================
     function check(pkg) {
         let d=[pkg.L, pkg.W, pkg.H].sort((a,b)=>b-a);
@@ -536,23 +525,19 @@ HTML_TEMPLATE = """
             return `<tr><td>${name}</td><td class="text-end"><span class="indicator ${cls}"></span>${txt}</td></tr>`;
         };
 
-        // UniUni: 长>20, 围>50(这里你原逻辑是 L+W+H>50), 重>20
         let uFail = (L>20 || (L+d[1]+d[2])>50 || pkg.Wt>20);
         h += row('UniUni', uFail, '限制(L>20/Wt>20)');
 
-        // USPS: 重>70, 围长>130, 长>30
         let usFail = (pkg.Wt>70 || L>30 || (L+(d[1]+d[2])*2)>130);
         h += row('USPS', usFail, '限制(>70lb/130")');
 
-        // FedEx: 重>150, 长>108, 围>165
         let fFail = (pkg.Wt>150 || L>108 || G>165);
         h += row('FedEx', fFail, '不可发(>150lb)');
 
-        // GOFO大件: 重>150
         let gFail = (pkg.Wt>150);
         h += row('GOFO大件', gFail, '超限(>150lb)');
 
-        // XLmiles: OM 上限：L<=144 且 G<=225 且 Wt<=200
+        // XLmiles：最大允许 OM 上限
         let xlFail = (pkg.Wt>200 || L>144 || G>225);
         h += row('XLmiles', xlFail, '范围(<=200lb/144"/225")');
 
@@ -572,7 +557,7 @@ HTML_TEMPLATE = """
     // ===================================
     // 邮编查询：优先 GOFO 邮编库；否则 zippopotam.us
     // ===================================
-    let CUR_ZONES = {}; // 仅给 GOFO 邮编区那些渠道用
+    let CUR_ZONES = {};
     let LAST_LOC = null;
 
     async function lookupZip(zip){
@@ -605,7 +590,6 @@ HTML_TEMPLATE = """
             }catch(e){}
         }
 
-        // 同时展示 FedEx Zone 预估
         if(zip && zip.length>=3){
             let z = calculateZoneMath(zip, wh);
             zinfo.innerHTML = `FedEx Zone(按仓库计算): <b>Zone ${z}</b>`;
@@ -622,9 +606,6 @@ HTML_TEMPLATE = """
 
     // ===================================
     // 规则：燃油/住宅费/签名费
-    // - 燃油：仅 YSD/632/GOFO大件
-    // - 住宅费：YSD=3.8, 632=2.88, GOFO大件=3.17
-    // - 签名费：YSD=9.30, 632=4.46, XLmiles=11.05（由开关控制）
     // ===================================
     function getResFee(ch){
         if(ch.includes("FedEx-YSD")) return 3.80;
@@ -640,12 +621,11 @@ HTML_TEMPLATE = """
     }
     function hasFuel(ch){
         if(ch.includes("FedEx-YSD") || ch.includes("FedEx-632") || ch.includes("GOFO大件")) return true;
-        return false; // 其它已含燃油
+        return false;
     }
 
     // ===================================
-    // FedEx 官网：住宅地址旺季附加费（构建时注入 DATA.fedex_res_peak）
-    // 仅在：peak=ON 且 addr=res 且 渠道=FedEx-YSD/632 时叠加
+    // FedEx 官网：住宅地址旺季附加费
     // ===================================
     function getFedexResPeakAmount(todayStr){
         let meta = DATA.fedex_res_peak;
@@ -660,7 +640,7 @@ HTML_TEMPLATE = """
     }
 
     // ===================================
-    // 取 Excel 报价行（保留你原方式）
+    // 取 Excel 报价行
     // ===================================
     function getDivisor(ch, vol){
         let u = ch.toUpperCase();
@@ -668,6 +648,11 @@ HTML_TEMPLATE = """
         if(u.includes('USPS')) return vol > 1728 ? 166 : 0;
         if(u.includes('ECO-MT')) return vol < 1728 ? 400 : 250;
         return 222;
+    }
+
+    function parseCommaFees(s){
+        if(!s) return [];
+        return s.split(/[,，]/).map(x => parseFloat(String(x).trim())).filter(v => isFinite(v) && v > 0);
     }
 
     // ===================================
@@ -710,12 +695,9 @@ HTML_TEMPLATE = """
             return;
         }
 
-        // FedEx 计算用 zone
         let fedexZone = (zip && zip.length>=3) ? calculateZoneMath(zip, wh) : null;
 
-        // 遍历该 tier 的渠道
         Object.keys(DATA.tiers[tier]).forEach(ch => {
-            // 过滤仓库可用
             let allow = CHANNEL_WAREHOUSE_ALLOW[ch] || ["WEST","CENTRAL","EAST"];
             if(!allow.includes(wh)) return;
 
@@ -723,9 +705,6 @@ HTML_TEMPLATE = """
             let prices = (DATA.tiers[tier][ch] && DATA.tiers[tier][ch].prices) ? DATA.tiers[tier][ch].prices : [];
             let zoneVal = "-";
 
-            // Zone 选择：
-            // - FedEx 标准渠道：用仓库+邮编计算
-            // - 其它：仍用 GOFO 邮编库（CUR_ZONES）
             if(isFedexStandardChannel(ch)){
                 zoneVal = fedexZone ? String(fedexZone) : "-";
             }else{
@@ -747,8 +726,11 @@ HTML_TEMPLATE = """
             }
             if(!uCh.includes('GOFO-报价') && cWt>1) cWt = Math.ceil(cWt);
 
-            // ===== XLmiles：不走 Excel，走规则 =====
+            // ===== XLmiles：修正附加费明细与一票多件逻辑 =====
             if(ch.includes("XLmiles")){
+                // 基础说明（固定）
+                details.push("一口价：含保价/预约/签收证明");
+
                 if(!fedexZone){
                     st="无分区/超重";
                     cls="text-muted";
@@ -761,19 +743,31 @@ HTML_TEMPLATE = """
                         bg="table-light";
                     }else{
                         zoneVal = "Z" + xg;
-                        let r = xl_services_price(pkg, xg);
+
+                        // 单件：只归类 AH/OS/OM 其一（不再做 AH/OS/OM 的 0.5 分摊）
+                        let r = xl_single_piece_price(pkg, xg);
                         if(!r.ok){
                             st=r.reason; cls="text-danger fw-bold"; bg="table-danger";
                             base=0;
                         }else{
                             base=r.base;
-                            details = details.concat(r.details);
+                            details.push(`${r.svc}：$${base.toFixed(2)} (L=${r.L.toFixed(1)}", G=${r.G.toFixed(1)}")`);
+                        }
+
+                        // ✅ 一票多件：仅当用户在输入框提供“同票其他件基础费”时才触发
+                        // 规则：第一件取大值计费，其余件半价
+                        if(base > 0){
+                            let others = parseCommaFees(document.getElementById('xlMultiFees').value || "");
+                            let mp = xl_apply_multi_piece(base, others);
+                            if(mp.isMulti && mp.detail){
+                                details.push(`一票多件(${mp.detail.count}件)：max=$${mp.detail.maxV.toFixed(2)} + 0.5*others=$${(0.5*mp.detail.sumOthers).toFixed(2)}`);
+                                base = mp.total; // XLmiles 总价（作为基础运费口径展示）
+                            }
                         }
                     }
                 }
 
-                // 住宅费：XLmiles 不收（未指定）
-                // 签名费：按开关
+                // 签名费：按开关叠加（你之前明确 XLmiles 有 $11.05）
                 if(base>0 && sigOn){
                     let sf = getSigFee(ch);
                     if(sf>0){ details.push(`签名:$${sf.toFixed(2)}`); base += sf; }
@@ -794,7 +788,7 @@ HTML_TEMPLATE = """
             }
 
             // ===== 其它渠道：走 Excel 报价表 =====
-            let zKey = zoneVal==='1' ? '2' : zoneVal; // 你的需求：YSD 从 Zone2 开始；Zone1 用 Zone2
+            let zKey = zoneVal==='1' ? '2' : zoneVal; // Zone1 取 Zone2（含 FedEx-YSD 从 Zone2 开始的修正）
             let row = null;
             if(prices && prices.length>0 && zKey!=='-'){
                 for(let r of prices){
@@ -834,7 +828,6 @@ HTML_TEMPLATE = """
             let fees = {fuel:0, res:0, peak:0, other:0, sig:0};
 
             if(base > 0) {
-                // 住宅费（按渠道不同）
                 if(isRes){
                     let rf = getResFee(ch);
                     if(rf>0){
@@ -843,10 +836,7 @@ HTML_TEMPLATE = """
                     }
                 }
 
-                // 旺季：目前只做你“必须真实更新”的 FedEx 住宅地址旺季附加费（官网 Demand Surcharge 固定每包金额）
-                // 其余 AHS/OVERSIZE/Unauthorized 旺季项你要完全按 Excel 抽取再注入，我可以下一版加（需要你确认各项对应关系）
                 if(isPeak){
-                    // USPS 旺季：你原来是“按表查价叠加”，这里暂不破坏你现有结构（你说已能按表查价）
                     if(ch.includes("FedEx-YSD") || ch.includes("FedEx-632")){
                         if(isRes){
                             let today = new Date();
@@ -860,7 +850,6 @@ HTML_TEMPLATE = """
                     }
                 }
 
-                // 签名费（按开关）
                 if(sigOn){
                     let sf = getSigFee(ch);
                     if(sf>0){
@@ -869,19 +858,15 @@ HTML_TEMPLATE = """
                     }
                 }
 
-                // 燃油费
                 if(hasFuel(ch)){
                     if(ch.includes("GOFO大件")){
                         let sub = base + fees.res + fees.peak + fees.sig + fees.other;
                         fees.fuel = sub * gofoFuel;
                         details.push(`燃油(${(gofoFuel*100).toFixed(1)}%):$${fees.fuel.toFixed(2)}`);
                     }else{
-                        // FedEx-YSD / 632：燃油按基础运费计算（符合你当前口径）
                         fees.fuel = base * fedexFuel;
                         details.push(`燃油(${(fedexFuel*100).toFixed(1)}%):$${fees.fuel.toFixed(2)}`);
                     }
-                }else{
-                    // 已含燃油的渠道：不额外加
                 }
             }
 
@@ -1016,7 +1001,6 @@ def load_tiers():
                     if ('weight' in v or 'lb' in v or '重量' in v) and w_idx == -1:
                         w_idx = i
 
-                    # 解析 Zone：支持 Zone 1 / 分区1 / zone~1
                     m = re.search(r'(?:zone|分区)\s*~?\s*(\d+)', v)
                     if m:
                         zn = m.group(1)
@@ -1046,7 +1030,7 @@ def load_tiers():
                 prices.sort(key=lambda x: x['w'])
                 t_data[ch_key] = {"prices": prices}
 
-                # === 排查日志（你要求“最小改动一行日志”）：输出每个渠道 zones/prices 数量 ===
+                # === 排查日志（最小改动一行日志） ===
                 print(f"    > {t_name}/{ch_key}: zones={list(z_map.keys())}, prices={len(prices)}")
 
             except:
@@ -1060,7 +1044,6 @@ if __name__ == '__main__':
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
 
-    # 构建时抓 FedEx 官方住宅旺季（Demand）固定每包金额
     fedex_res_peak = fetch_fedex_residential_peak_table()
 
     final = {
@@ -1081,4 +1064,4 @@ if __name__ == '__main__':
     with open(os.path.join(OUTPUT_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)
 
-    print("✅ 完成！FedEx 标准渠道已改为仓库+邮编算 Zone；XLmiles 已按规则计算；FedEx住宅旺季构建时自动更新。")
+    print("✅ 完成！XLmiles：单件不再错误分摊；一票多件仅在输入“其他件基础费”时按最大值全额+其余半价计算。")
