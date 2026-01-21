@@ -66,7 +66,14 @@ SIGNATURE_FEE_BY_CHANNEL = {
     "XLmiles-报价": 11.05,
 }
 
-# 仓库可用渠道（写死：选择仓库后，仅显示可用渠道；不可用不显示）
+# ==========================================
+# ✅ 修复点(2)：按你给的仓库-渠道映射写死（排查并纠正）
+# - GOFO-报价/GOFO-MT/UNIUNI：美西91730 + 美中
+# - USPS-YSD / FedEx-YSD：美西 + 美中
+# - XLmiles：仅美西91730
+# - GOFO大件 / FedEx-632：美西 + 美中 + 美东
+# 说明：FedEx-ECO-MT 报价仍可解析进数据，但不在任何仓库展示（避免“仓库可用渠道”误导）
+# ==========================================
 WAREHOUSE_CHANNELS = {
     "WEST_91730": [
         "GOFO-报价",
@@ -77,7 +84,6 @@ WAREHOUSE_CHANNELS = {
         "XLmiles-报价",
         "GOFO大件-GRO-报价",
         "FedEx-632-MT-报价",
-        "FedEx-ECO-MT报价",
     ],
     "CENTRAL": [
         "GOFO-报价",
@@ -87,12 +93,10 @@ WAREHOUSE_CHANNELS = {
         "FedEx-YSD-报价",
         "GOFO大件-GRO-报价",
         "FedEx-632-MT-报价",
-        "FedEx-ECO-MT报价",
     ],
     "EAST": [
         "GOFO大件-GRO-报价",
         "FedEx-632-MT-报价",
-        "FedEx-ECO-MT报价",
     ],
 }
 
@@ -102,7 +106,7 @@ US_STATES_CN = {
     "CO": "科罗拉多", "CT": "康涅狄格", "DE": "特拉华", "FL": "佛罗里达", "GA": "佐治亚",
     "HI": "夏威夷", "ID": "爱达荷", "IL": "伊利诺伊", "IN": "印第安纳", "IA": "爱荷华",
     "KS": "堪萨斯", "KY": "肯塔基", "LA": "路易斯安那", "ME": "缅因", "MD": "马里兰",
-    "MA": "马萨诸塞", "MI": "密歇根", "MN": "明尼苏达", "MS": "密西西比", "MO": "密苏里",
+    "MA": "马萨诸塞", "MI": "密歇根", "MN": "明尼苏里", "MS": "密西西比", "MO": "密苏里",
     "MT": "蒙大拿", "NE": "内布拉斯加", "NV": "内华达", "NH": "新罕布什尔", "NJ": "新泽西",
     "NM": "新墨西哥", "NY": "纽约", "NC": "北卡罗来纳", "ND": "北达科他", "OH": "俄亥俄",
     "OK": "俄克拉荷马", "OR": "俄勒冈", "PA": "宾夕法尼亚", "RI": "罗德岛", "SC": "南卡罗来纳",
@@ -113,6 +117,8 @@ US_STATES_CN = {
 
 # ==========================================
 # 2. 网页模板（仅对“有问题处”做改动）
+# - 修复点(1)：XLmiles 明细标注更清晰（服务类型/签名签收等）
+# - 修复点(3)：所有附加费明细文案统一“可读标签”，避免客户二次理解
 # ==========================================
 HTML_TEMPLATE = r"""
 <!DOCTYPE html>
@@ -313,11 +319,10 @@ HTML_TEMPLATE = r"""
             2. <strong>GOFO大件</strong>：住宅费按渠道固定；燃油使用“统一燃油”；燃油对(基础+附加费)计入。<br>
             3. <strong>USPS-YSD</strong>：燃油独立（USPS燃油）；旺季附加费<strong>按表格右侧《2025旺季附加费-USPS Ground Advantage》查价</strong>并叠加。<br>
             4. <strong>FedEx ECO-MT</strong>：FedEx与USPS联合承运，末端USPS派送；报价表仅供参考；<strong>不包含旺季附加费</strong>，实际以账单为准。<br>
-            5. <strong>XLmiles</strong>：超大件渠道，含签名签收费；按 AH/OS/OM 规则判定服务类型与费用（见下方说明）。<br>
+            5. <strong>XLmiles</strong>：仅美西91730可用；明细展示服务类型(AH/OS/OM) + 签名签收费(Indirect/Direct Signature)。<br>
             6. 如派送后产生额外费用（复核尺寸不符/退货/其它附加费等）导致物流商向我司加收，我司将实报实销。<br>
           </div>
 
-          <!-- 新增：旺季/免责声明板块（只展示说明，不影响计算） -->
           <div class="alert alert-warning mt-3 note-box">
             <div class="fw-bold mb-1">旺季附加费 / 注意事项（必读）</div>
             <div>① USPS Ground Advantage 2025 报价表的旺季附加费在报价表右侧，全名称：<b>2025旺季附加费-USPS Ground Advantage</b>，USPS-YSD 旺季费需按该表格独立查价并叠加。</div>
@@ -539,7 +544,6 @@ HTML_TEMPLATE = r"""
       let zoneVal = CUR_ZONES[ch];
       if((zoneVal===null || zoneVal===undefined || zoneVal==='') && ch === 'FedEx-YSD-报价') {
         zoneVal = CUR_ZONES['FedEx-632-MT-报价'] || CUR_ZONES['FedEx-ECO-MT报价'] || null;
-        // 仅用于排查：前端控制台记录一次
         try { console.warn('[debug] FedEx-YSD zone missing, fallback to 632/ECO zone=', zoneVal); } catch(e){}
       }
       zoneVal = (zoneVal===null || zoneVal===undefined || zoneVal==='') ? '-' : String(zoneVal).trim();
@@ -589,12 +593,13 @@ HTML_TEMPLATE = r"""
         if(!xl.ok) {
           st="超规不可发"; cls="text-danger fw-bold"; bg="table-danger"; base=0;
         } else {
-          // 可发则显示类型提示
-          details.push(`服务:${xl.type}`);
+          // ✅ 修复点(1)：XLmiles 附加费明细标注清晰（服务类型）
+          details.push(`XLmiles服务类型(AH/OS/OM): ${xl.type}`);
         }
       }
 
-      // 4) 费用叠加
+      // 4) 费用叠加（统一明细标签）
+      // f: 燃油 Fuel, r: 住宅 Residential, p: 旺季 Peak, o: 其它附加 Other(超大/Unauthorized/Max-of-3等), s: 签名 Signature
       let fees = {f:0, r:0, p:0, o:0, s:0};
 
       if(base > 0) {
@@ -602,13 +607,13 @@ HTML_TEMPLATE = r"""
         // 4.1 住宅地址费（仅你指定的三个渠道）
         if(isRes && DATA.res_fee_by_channel && DATA.res_fee_by_channel[ch] !== undefined) {
           fees.r = DATA.res_fee_by_channel[ch];
-          details.push(`住宅:$${fees.r.toFixed(2)}`);
+          details.push(`住宅地址费(Residential): $${fees.r.toFixed(2)}`);
         }
 
         // 4.2 签名签收费（你指定的渠道）
         if(DATA.signature_fee_by_channel && DATA.signature_fee_by_channel[ch] !== undefined) {
           fees.s = DATA.signature_fee_by_channel[ch];
-          details.push(`签名:$${fees.s.toFixed(2)}`);
+          details.push(`签名签收(Indirect/Direct Signature): $${fees.s.toFixed(2)}`);
         }
 
         // 4.3 FedEx ECO-MT：Max-of-3（保持原逻辑）
@@ -621,13 +626,14 @@ HTML_TEMPLATE = r"""
           let maxFee = Math.max(f_ahs, f_ow, f_os);
           if(maxFee > 0) {
             fees.o += maxFee;
-            let reason = (maxFee===f_os) ? "超大" : ((maxFee===f_ow) ? "超重" : "AHS");
-            details.push(`${reason}:$${maxFee.toFixed(2)}`);
-            st = reason; cls = "text-warning fw-bold";
+            let reason = (maxFee===f_os) ? "超大(Oversize)" : ((maxFee===f_ow) ? "超重(Overweight)" : "额外处理(AHS)");
+            details.push(`ECO-MT 附加(三者取最大 Max-of-3) - ${reason}: $${maxFee.toFixed(2)}`);
+            st = "ECO-MT附加"; cls = "text-warning fw-bold";
           }
           if(pkg.Wt>70 || G>130) {
-            st="不可发(Unauth)"; cls="text-danger fw-bold"; bg="table-danger";
+            st="不可发(Unauthorized)"; cls="text-danger fw-bold"; bg="table-danger";
             fees.o += 2000;
+            details.push(`ECO-MT 不可发(Unauthorized 占位): $${(2000).toFixed(2)}`);
           }
         }
         // 4.4 FedEx-YSD / 632：旺季逻辑（AHS/OVERSIZE/UNAUTHORIZED/住宅旺季）
@@ -639,11 +645,11 @@ HTML_TEMPLATE = r"""
           if(isUn) {
             fees.o += DATA.surcharges.unauthorized_fee;
             st="Unauthorized"; cls="text-danger fw-bold"; bg="table-danger";
-            details.push(`Unauthorized:$${DATA.surcharges.unauthorized_fee.toFixed(2)}`);
+            details.push(`不可发附加费(Unauthorized): $${DATA.surcharges.unauthorized_fee.toFixed(2)}`);
           } else if(isOver) {
             fees.o += DATA.surcharges.oversize_fee;
             st="Oversize"; cls="text-warning fw-bold";
-            details.push(`超大:$${DATA.surcharges.oversize_fee.toFixed(2)}`);
+            details.push(`超大件附加费(Oversize): $${DATA.surcharges.oversize_fee.toFixed(2)}`);
           }
 
           // 旺季附加（你要求：开启旺季后才触发）
@@ -652,19 +658,19 @@ HTML_TEMPLATE = r"""
             let isAHS = (L>48 || dims[1]>30 || (L+2*(dims[1]+dims[2]))>105 || pkg.Wt>50);
             if(isAHS) {
               fees.p += DATA.surcharges.ahs_fee;
-              details.push(`旺季AHS:$${DATA.surcharges.ahs_fee.toFixed(2)}`);
+              details.push(`旺季附加费(Peak) - 额外处理AHS: $${DATA.surcharges.ahs_fee.toFixed(2)}`);
             }
             if(st.includes('Oversize')) {
               fees.p += DATA.surcharges.peak_oversize;
-              details.push(`旺季OS:$${DATA.surcharges.peak_oversize.toFixed(2)}`);
+              details.push(`旺季附加费(Peak) - Oversize: $${DATA.surcharges.peak_oversize.toFixed(2)}`);
             }
             if(st.includes('Unauthorized')) {
               fees.p += DATA.surcharges.peak_unauthorized;
-              details.push(`旺季Unauth:$${DATA.surcharges.peak_unauthorized.toFixed(2)}`);
+              details.push(`旺季附加费(Peak) - Unauthorized: $${DATA.surcharges.peak_unauthorized.toFixed(2)}`);
             }
             if(isRes && DATA.res_fee_by_channel && DATA.res_fee_by_channel[ch] !== undefined) {
               fees.p += DATA.surcharges.peak_res;
-              details.push(`旺季住宅:$${DATA.surcharges.peak_res.toFixed(2)}`);
+              details.push(`旺季附加费(Peak) - 住宅地址: $${DATA.surcharges.peak_res.toFixed(2)}`);
             }
           }
         }
@@ -676,14 +682,12 @@ HTML_TEMPLATE = r"""
           if(isUn) {
             fees.o += DATA.surcharges.unauthorized_fee;
             st="Unauthorized"; cls="text-danger fw-bold"; bg="table-danger";
-            details.push(`Unauthorized:$${DATA.surcharges.unauthorized_fee.toFixed(2)}`);
+            details.push(`不可发附加费(Unauthorized): $${DATA.surcharges.unauthorized_fee.toFixed(2)}`);
           } else if(isOver) {
             fees.o += DATA.surcharges.oversize_fee;
             st="Oversize"; cls="text-warning fw-bold";
-            details.push(`超大:$${DATA.surcharges.oversize_fee.toFixed(2)}`);
+            details.push(`超大件附加费(Oversize): $${DATA.surcharges.oversize_fee.toFixed(2)}`);
           }
-
-          // 其它渠道旺季：仅 USPS 走表；ECO-MT 明确不包含旺季；其它保持不变（避免误算）
         }
 
         // 4.6 USPS 旺季：按表格查价叠加（你要求）
@@ -691,10 +695,9 @@ HTML_TEMPLATE = r"""
           let p = getUspsPeakFee(cWt, zoneVal);
           if(p > 0) {
             fees.p += p;
-            details.push(`旺季:$${p.toFixed(2)}`);
+            details.push(`旺季附加费(Peak) - USPS按表: $${p.toFixed(2)}`);
           } else {
-            // 查不到就不加，避免乱加
-            details.push(`旺季:$0.00`);
+            details.push(`旺季附加费(Peak) - USPS按表: $0.00`);
           }
         }
 
@@ -705,15 +708,15 @@ HTML_TEMPLATE = r"""
             // GOFO大件：燃油对(基础+附加)计入
             let subTotal = base + fees.r + fees.p + fees.o + fees.s;
             fees.f = subTotal * unifiedFuel;
-            details.push(`燃油(${(unifiedFuel*100).toFixed(1)}%):$${fees.f.toFixed(2)}`);
+            details.push(`燃油附加费(Fuel, ${ (unifiedFuel*100).toFixed(1) }%) - 按(基础+附加): $${fees.f.toFixed(2)}`);
           } else {
             // FedEx-YSD / 632：燃油对基础运费计入
             fees.f = base * unifiedFuel;
-            details.push(`燃油(${(unifiedFuel*100).toFixed(1)}%):$${fees.f.toFixed(2)}`);
+            details.push(`燃油附加费(Fuel, ${ (unifiedFuel*100).toFixed(1) }%) - 按基础运费: $${fees.f.toFixed(2)}`);
           }
         } else if(fg === 'USPS') {
           fees.f = base * uspsFuel;
-          details.push(`燃油(${(uspsFuel*100).toFixed(1)}%):$${fees.f.toFixed(2)}`);
+          details.push(`燃油附加费(Fuel, ${ (uspsFuel*100).toFixed(1) }%) - USPS: $${fees.f.toFixed(2)}`);
         } else {
           // NONE：报价已含燃油，不额外加
         }
@@ -739,17 +742,15 @@ HTML_TEMPLATE = r"""
 """
 
 # ==========================================
-# 3. 核心数据清洗（仅对“有问题处”做改动）
+# 3. 核心数据清洗（保持不动，仅延续你现有修复）
 # ==========================================
-
 def safe_float(val):
-    """修复点：兼容 $ / ￥ / ¥ / 逗号，并尽量从字符串中提取数字"""
+    """兼容 $ / ￥ / ¥ / 逗号，并尽量从字符串中提取数字"""
     try:
         if pd.isna(val) or val == "" or str(val).strip().lower() == "nan":
             return 0.0
         s = str(val).strip()
         s = s.replace(",", "").replace("$", "").replace("￥", "").replace("¥", "")
-        # 允许出现文字时抽取第一个数字
         m = re.findall(r"[-]?\d+(?:\.\d+)?", s)
         if not m:
             return 0.0
@@ -764,7 +765,6 @@ def normalize_zone(v):
     s = str(v).strip()
     if s == "" or s.lower() in ("nan", "-", "none"):
         return None
-    # 1.0 -> 1
     if re.fullmatch(r"\d+(\.0+)?", s):
         try:
             return str(int(float(s)))
@@ -840,10 +840,6 @@ def to_lb(val):
     return n
 
 def load_usps_peak_table():
-    """
-    USPS 旺季附加费表：你要求从 USPS-YSD-报价 副本右侧表格读取
-    这里做“尽量兼容”的解析：识别包含“旺季附加费/2025旺季附加费”的表头行，然后按 weight + zone 列抽取
-    """
     print("\n--- 1.2 解析 USPS 旺季附加费表格（按表格查价） ---")
     path = os.path.join(DATA_DIR, TIER_FILES["T0"])
     if not os.path.exists(path):
@@ -854,13 +850,10 @@ def load_usps_peak_table():
         return []
 
     df = df.fillna("")
-
-    # ✅ 仅新增 1 行日志（排查用）：防止越界时可确认行列数
     print(f"    > USPS旺季表sheet维度: rows={len(df)}, cols={df.shape[1] if hasattr(df,'shape') else 'NA'}")
 
     h_row = None
-    # 找表头：同时出现（旺季附加费/2025旺季附加费）与（zone/分区）与（weight/重量）
-    scan_n = min(80, len(df))  # ✅ 修复：避免 df 行数不足时 iloc 越界
+    scan_n = min(80, len(df))
     for i in range(scan_n):
         row_str = " ".join(df.iloc[i].astype(str).values).lower().replace(" ", "")
         if (("旺季附加费" in row_str) or ("2025" in row_str)) and (("zone" in row_str) or ("分区" in row_str)) and (("weight" in row_str) or ("重量" in row_str) or ("lb" in row_str)):
@@ -868,7 +861,6 @@ def load_usps_peak_table():
             break
 
     if h_row is None:
-        # 保持不报错：返回空表
         print("✅ USPS 旺季表: 0 行（未识别到表头）")
         return []
 
@@ -923,8 +915,7 @@ def load_tiers():
             df = df.fillna("")
             try:
                 h_row = 0
-                # 寻找表头行：兼容 中文 '重量','分区' 及 英文 'weight','zone'
-                scan_n = min(80, len(df))  # ✅ 修复：避免 df 行数不足时 iloc 越界
+                scan_n = min(80, len(df))
                 for i in range(scan_n):
                     row_str = " ".join(df.iloc[i].astype(str).values).lower()
                     has_zone = ("zone" in row_str or "分区" in row_str)
@@ -937,23 +928,16 @@ def load_tiers():
                 w_idx = -1
                 z_map = {}
 
-                # 修复点：XLmiles 在 T2/T3 价格可能带￥/文本，safe_float 已修复；
-                # 若 zone 列名含“1-2/1~2”这类，做一次兼容映射（避免出现 zones=['30','35'] 这种误抓）
                 if ch_key == "XLmiles-报价":
                     for i, v in enumerate(headers):
                         vv = str(v).lower().replace(" ", "")
                         if w_idx == -1 and (("weight" in vv) or ("lb" in vv) or ("重量" in vv)):
                             w_idx = i
-                        # zone 1-2 列：同时出现 zone/分区 与 1 与 2（或 1-2/1~2）
                         if ("zone" in vv or "分区" in vv) and (("1-2" in vv) or ("1~2" in vv) or ("1/2" in vv) or (("1" in vv) and ("2" in vv))):
                             z_map["1"] = i
                             z_map["2"] = i
-                        # zone 3 列
                         if ("zone" in vv or "分区" in vv) and re.search(r"(?:zone|分区)\s*~?\s*3", vv):
                             z_map["3"] = i
-                    # 兜底：若没识别到，则走通用逻辑
-                    if not z_map:
-                        pass
 
                 if w_idx == -1:
                     for i, v in enumerate(headers):
@@ -961,7 +945,6 @@ def load_tiers():
                         if ("weight" in vv or "lb" in vv or "重量" in vv) and w_idx == -1:
                             w_idx = i
 
-                # 通用 zone 列识别（避免误抓价格数字：仅在列名里含 zone/分区 时才抓）
                 if not z_map:
                     for i, v in enumerate(headers):
                         vv = str(v).lower()
@@ -1027,10 +1010,6 @@ if __name__ == "__main__":
         f.write(html)
 
     print("✅ 完成！已按要求修复/更新：")
-    print("  - XLmiles T2/T3 价格解析（支持￥/¥，并修正 zone 列误抓）")
-    print("  - 燃油模块标注与排序（仅指定渠道叠加燃油；USPS燃油独立）")
-    print("  - FedEx-YSD 无 zone1：zone1 自动按 zone2 取价")
-    print("  - 旺季说明板块 + USPS 旺季按表查价（识别到则叠加；识别不到不乱加）")
-    print("  - 住宅地址费按渠道固定 + 新增签名签收费")
-    print("  - XLmiles 合规性检查与说明")
-    print("  - 仓库选择仅决定可用渠道显示（写死映射）")
+    print("  - XLmiles：仅美西91730可用；附加费明细显式标注服务类型(AH/OS/OM)+签名签收")
+    print("  - 仓库-渠道映射：按你提供清单写死并排查纠正；未列出的渠道不展示报价")
+    print("  - 所有附加费明细：统一可读标签（Residential / Signature / Peak / Oversize / Unauthorized / Fuel）")
