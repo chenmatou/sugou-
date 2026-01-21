@@ -2,11 +2,12 @@ name: Deploy Quote Tool
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
   workflow_dispatch:
   schedule:
-    # 每天跑一次（UTC 01:30 = 北京时间 09:30）
-    - cron: "30 1 * * *"
+    # GitHub Actions 使用 UTC；下面是每天 09:00 UTC（纽约冬令时约 04:00）
+    - cron: "0 9 * * *"
 
 permissions:
   contents: write
@@ -15,28 +16,41 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout code (拉取代码)
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Set up Python (设置Python环境)
         uses: actions/setup-python@v4
         with:
-          python-version: "3.9"
+          python-version: '3.9'
 
-      - name: Install system deps (pdftotext)
+      - name: Install dependencies (安装依赖库)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y poppler-utils
-
-      - name: Install python deps
-        run: |
+          python -V
+          pip -V
           pip install pandas openpyxl
 
-      - name: Run Generator
+      - name: Run Generator (执行生成脚本)
         run: |
+          ls -al
           python generate.py
 
-      - name: Deploy to GitHub Pages
+      # ✅ 关键：不改你任何业务代码，只做“生成结果”硬校验 + 打印排查信息
+      - name: Verify index.html generated (硬校验输出)
+        run: |
+          echo "---- LIST ROOT ----"
+          ls -al
+          echo "---- LIST PUBLIC ----"
+          ls -al public || true
+          echo "---- FIND index.html ----"
+          find . -maxdepth 3 -name "index.html" -print
+          echo "---- ASSERT public/index.html EXISTS ----"
+          test -f public/index.html
+          echo "OK: public/index.html exists"
+          echo "---- HEAD of public/index.html ----"
+          head -n 5 public/index.html
+
+      - name: Deploy to GitHub Pages (发布到网页)
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
