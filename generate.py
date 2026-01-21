@@ -30,7 +30,7 @@ CHANNEL_KEYWORDS = {
     "XLmiles-报价": ["XLmiles"],
     "GOFO大件-GRO-报价": ["GOFO", "大件"],
     "FedEx-632-MT-报价": ["632"],
-    "FedEx-YSD-报价": ["FedEx", "YSD"],  # 包含 FedEx 和 YSD
+    "FedEx-YSD-报价": ["FedEx", "YSD"],
 }
 
 # 邮编库配置（GOFO 独立邮编区：来自 GOFO-报价 sheet 下方邮编区）
@@ -351,12 +351,10 @@ HTML_TEMPLATE = r"""
   ];
 
   const RULES = {
-    // 住宅费判断（仅指定渠道）
     hasResFee: n => {
       let u = n.toUpperCase();
       return RES_FEE_CHANNELS.some(k => u.includes(k));
     },
-    // 计费重除数
     getDivisor: (n, vol) => {
       let u = n.toUpperCase();
       if(u.includes('UNIUNI')) return 0;
@@ -364,12 +362,10 @@ HTML_TEMPLATE = r"""
       if(u.includes('ECO-MT')) return vol < 1728 ? 400 : 250;
       return 222;
     },
-    // FedEx统一燃油判断（仅三渠道）
     useFedexUnifiedFuel: n => {
       let u = n.toUpperCase();
       return FEDEX_UNIFIED_FUEL_CHANNELS.some(k => u.includes(k));
     },
-    // USPS燃油（仅 USPS 渠道）
     useUspsFuel: n => {
       let u = n.toUpperCase();
       return u.includes('USPS');
@@ -393,7 +389,6 @@ HTML_TEMPLATE = r"""
     return {L,W,H,Wt:Weight};
   }
 
-  // 全渠道实时检测模块（展示用）
   function check(pkg) {
     let d=[pkg.L,pkg.W,pkg.H].sort((a,b)=>b-a);
     let L=d[0], G=L+2*(d[1]+d[2]);
@@ -433,21 +428,20 @@ HTML_TEMPLATE = r"""
     });
   });
 
-  // 邮编查询：GOFO 专属邮编区 + 州/城市展示（zip_sc 优先，否则 fallback 用 GOFO 邮编区）
+  // 邮编查询：GOFO 专属邮编区 + 州/城市展示
   document.getElementById('btnLookup').onclick = () => {
     let z=document.getElementById('zipCode').value.trim();
     let d=document.getElementById('locInfo');
 
-    // 州/城市展示（优先 zip_sc）
     let sc = (DATA.zip_sc && DATA.zip_sc[z]) ? DATA.zip_sc[z] : null;
 
-    // GOFO 专属邮编库（用于 GOFO 系列分区）
     if(!DATA.zip_db || !DATA.zip_db[z]) {
       if(sc) d.innerHTML = `<span class='text-warning'>⚠️ ${sc.sn} ${sc.s} - ${sc.c}（仅展示，GOFO邮编库未命中）</span>`;
       else d.innerHTML="<span class='text-danger'>❌ 未找到邮编</span>";
       CUR_ZONES={};
       return;
     }
+
     let i=DATA.zip_db[z];
     CUR_ZONES=i.z || {};
     let stateLine = sc ? `${sc.sn} ${sc.s} - ${sc.c}` : `${i.sn} ${i.s} - ${i.c}`;
@@ -459,8 +453,6 @@ HTML_TEMPLATE = r"""
     if(!DATA.usps_peak || !DATA.usps_peak.rows || DATA.usps_peak.rows.length===0) return 0;
     let z = String(zoneVal || '').trim();
     if(!z || z==='-') return 0;
-
-    // 取第一条 w>=chargeLb 的行
     for(const r of DATA.usps_peak.rows) {
       if(r.w >= chargeLb-0.0001) {
         let key = 'z'+z;
@@ -469,6 +461,19 @@ HTML_TEMPLATE = r"""
       }
     }
     return 0;
+  }
+
+  // ✅ 修复点：FedEx-YSD zone 缺失时，按“FedEx标准分区”回退使用 632-MT 的 zone（两者同属于 FedEx 标准）
+  function getZoneWithFedexFallback(chKey) {
+    let zoneVal = (CUR_ZONES && CUR_ZONES[chKey]) ? CUR_ZONES[chKey] : null;
+    if(zoneVal === null || zoneVal === undefined || zoneVal === '' || zoneVal === '-' ) {
+      let u = String(chKey).toUpperCase();
+      if(u.includes('FEDEX-YSD')) {
+        // 优先 632，其次 ECO（都属于 FedEx 标准分区逻辑）
+        return (CUR_ZONES && (CUR_ZONES['FedEx-632-MT-报价'] || CUR_ZONES['FedEx-ECO-MT报价'])) || '-';
+      }
+    }
+    return zoneVal ?? '-';
   }
 
   document.getElementById('btnCalc').onclick = () => {
@@ -507,9 +512,10 @@ HTML_TEMPLATE = r"""
 
     Object.keys(DATA.tiers[tier]).forEach(ch=>{
       let prices=DATA.tiers[tier][ch].prices;
-      if(!prices || prices.length===0) return; // 价格表为空直接跳过（你现在 FedEx-YSD 不显示通常就在这里）
+      if(!prices || prices.length===0) return;
 
-      let zoneVal = (CUR_ZONES && CUR_ZONES[ch]) ? CUR_ZONES[ch] : '-';
+      // ✅ 使用 FedEx-YSD 回退逻辑拿 zone
+      let zoneVal = getZoneWithFedexFallback(ch);
 
       let uCh=ch.toUpperCase();
       let base=0, st="正常", cls="text-success", bg="";
@@ -525,7 +531,7 @@ HTML_TEMPLATE = r"""
       if(!uCh.includes('GOFO-报价') && cWt>1) cWt=Math.ceil(cWt);
 
       // 2) 匹配价格
-      let zKey = (zoneVal==='1') ? '2' : String(zoneVal);
+      let zKey = (String(zoneVal)==='1') ? '2' : String(zoneVal);
       let row=null;
       for(let r of prices){ if(r.w >= cWt-0.001){ row=r; break; } }
 
@@ -598,12 +604,10 @@ HTML_TEMPLATE = r"""
           }
         }
 
-        // 旺季：USPS-YSD 走表格查价；其他走你原规则（保留）
+        // 旺季：USPS-YSD 走表格查价；其他保留原规则
         if(isPeak){
           let p=0;
-
           if(uCh.includes('USPS')){
-            // 按表格查价（独立叠加）
             p = lookupUspsPeakFee(cWt, zoneVal);
             if(p>0) details.push(`旺季:$${p.toFixed(2)}`);
           } else {
@@ -614,7 +618,7 @@ HTML_TEMPLATE = r"""
           fees.p = p;
         }
 
-        // 燃油：GOFO大件独立；FedEx统一仅三渠道；USPS独立
+        // 燃油：GOFO大件独立；FedEx统一仅三渠道；USPS独立；其他默认已含燃油
         if(uCh.includes('GOFO大件')){
           let subTotal = base + fees.r + fees.p + fees.o;
           fees.f = subTotal * gofoFuel;
@@ -626,7 +630,6 @@ HTML_TEMPLATE = r"""
           fees.f = base * uspsFuel;
           details.push(`燃油(${(uspsFuel*100).toFixed(1)}%):$${fees.f.toFixed(2)}`);
         }
-        // 其他渠道：默认认为报价已含燃油（不再加）
       }
 
       let tot=base + fees.f + fees.r + fees.p + fees.o;
@@ -699,7 +702,11 @@ def load_zip_db():
             if z.isdigit() and len(z) == 5:
                 zones = {}
                 for k, col_idx in ZIP_COL_MAP.items():
-                    val = str(row[col_idx]).strip()
+                    val = ""
+                    try:
+                        val = str(row[col_idx]).strip()
+                    except Exception:
+                        val = ""
                     if val in ["-", "nan", "", "0", 0]:
                         zones[k] = None
                     else:
@@ -717,18 +724,22 @@ def load_zip_db():
         pass
 
     print(f"✅ 邮编库: {len(db)} 条")
+
+    # ✅✅✅ 仅用于排查：最小改动（1行日志）
+    miss_ysd = sum(1 for _, v in db.items() if v.get("z", {}).get("FedEx-YSD-报价") in (None, "", "-", "nan"))
+    ok_632 = sum(1 for _, v in db.items() if v.get("z", {}).get("FedEx-632-MT-报价") not in (None, "", "-", "nan"))
+    print(f"🔎 ZIP分区缺失统计: FedEx-YSD缺失={miss_ysd}, FedEx-632有效={ok_632}")
+
     return db
 
 
 def load_zip_state_city(zip_db):
     """
-    1) 优先标准库（如果环境中可用）：
-       - 这里不强依赖第三方库，避免 GitHub Actions 额外安装
-    2) 否则 fallback：直接用 GOFO 邮编区里的州/城市字段
+    1) 优先标准库（如果环境中可用）：uszipcode（若用户自行安装）
+    2) 否则 fallback：用 GOFO 邮编区里的州/城市字段
     """
     print("\n--- 1.1 加载 ZIP 州/城市映射（优先标准库，否则fallback） ---")
 
-    # 方案A：尝试 uszipcode（若用户自行安装了依赖则可用）
     try:
         from uszipcode import SearchEngine  # type: ignore
 
@@ -746,7 +757,6 @@ def load_zip_state_city(zip_db):
     except Exception:
         pass
 
-    # 方案B：fallback（来源 GOFO 邮编区）
     m = {}
     for z, v in zip_db.items():
         m[z] = {"s": v.get("s", ""), "sn": v.get("sn", ""), "c": v.get("c", "")}
@@ -770,11 +780,6 @@ def to_lb(val):
 
 
 def parse_usps_peak_table():
-    """
-    解析 USPS 旺季附加费表格（按表格查价）
-    约定：从 T0.xlsx 中 USPS-YSD-报价 sheet 读取。
-    输出：rows=[{w:<lb上限>, z1:..., z2:...}]
-    """
     print("\n--- 1.2 解析 USPS 旺季附加费表格（按表格查价） ---")
     path = os.path.join(DATA_DIR, TIER_FILES["T0"])
     if not os.path.exists(path):
@@ -785,7 +790,6 @@ def parse_usps_peak_table():
         return {"rows": []}
 
     df = df.fillna("")
-    # 找表头行（包含 weight/lb/重量 和 zone/分区/z）
     h_row = None
     for i in range(50):
         row_str = " ".join(df.iloc[i].astype(str).values).lower()
@@ -799,9 +803,8 @@ def parse_usps_peak_table():
 
     headers = df.iloc[h_row].astype(str).tolist()
 
-    # weight列
     w_idx = -1
-    z_map = {}  # zone -> col
+    z_map = {}
     for ci, hv in enumerate(headers):
         v = str(hv).strip().lower()
         v2 = re.sub(r"\s+", "", v)
@@ -810,21 +813,17 @@ def parse_usps_peak_table():
             w_idx = ci
 
         zn = None
-        # zone2 / 分区2 / zone~2
         m = re.search(r"(?:zone|分区)~?(\d+)", v2)
         if m:
             zn = m.group(1)
-        # z2
         if zn is None:
             m = re.search(r"^z(\d+)$", v2)
             if m:
                 zn = m.group(1)
-        # 纯数字
         if zn is None:
             m = re.search(r"^(\d+)$", v2)
             if m:
                 zn = m.group(1)
-        # 2区/2區
         if zn is None:
             m = re.search(r"^(\d+)(?:区|區)$", v2)
             if m:
@@ -896,21 +895,17 @@ def load_tiers():
                         w_idx = ci
 
                     zn = None
-                    # 兼容：Zone2/分区2/zone~2
                     m = re.search(r"(?:zone|分区)~?(\d+)", v2)
                     if m:
                         zn = m.group(1)
-                    # 兼容：Z2
                     if zn is None:
                         m = re.search(r"^z(\d+)$", v2)
                         if m:
                             zn = m.group(1)
-                    # 兼容：纯数字 2/3/4
                     if zn is None:
                         m = re.search(r"^(\d+)$", v2)
                         if m:
                             zn = m.group(1)
-                    # 兼容：2区/2區
                     if zn is None:
                         m = re.search(r"^(\d+)(?:区|區)$", v2)
                         if m:
@@ -927,8 +922,7 @@ def load_tiers():
                 for i in range(h_row + 1, len(df)):
                     row = df.iloc[i]
                     try:
-                        w_val = row[w_idx]
-                        lb = to_lb(w_val)
+                        lb = to_lb(row[w_idx])
                         if lb is None:
                             continue
                         item = {"w": lb}
@@ -943,7 +937,7 @@ def load_tiers():
 
                 prices.sort(key=lambda x: x["w"])
 
-                # ✅✅✅ 仅用于排查：最小改动（你要求的“立刻加 1 行日志”）
+                # ✅✅✅ 排查日志（你之前要求的那 1 行）
                 print(
                     f"    > {t_name}/{ch_key}: zones={sorted(z_map.keys(), key=lambda x:int(x)) if z_map else []}, prices={len(prices)}"
                 )
@@ -967,10 +961,10 @@ if __name__ == "__main__":
     tiers = load_tiers()
 
     final = {
-        "zip_db": zip_db,          # GOFO 独立邮编区（含各渠道 zone 列）
-        "zip_sc": zip_sc,          # 州/城市展示（优先标准库，否则 fallback）
-        "usps_peak": usps_peak,    # USPS 旺季表（按表查价）
-        "tiers": tiers,            # T0~T3 各渠道报价表
+        "zip_db": zip_db,
+        "zip_sc": zip_sc,
+        "usps_peak": usps_peak,
+        "tiers": tiers,
         "surcharges": GLOBAL_SURCHARGES,
     }
 
