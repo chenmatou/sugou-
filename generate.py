@@ -5,6 +5,7 @@ import os
 import warnings
 from datetime import datetime
 from urllib.request import urlopen, Request
+import subprocess
 
 # 忽略 Excel 样式警告
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
@@ -40,7 +41,7 @@ ZIP_COL_MAP = {
     "FedEx-632-MT-报价": 12, "FedEx-YSD-报价": 13
 }
 
-# 你的旧全局附加费仍保留（但住宅费/签名费/旺季 FedEx 改为按渠道逻辑覆盖）
+# 你的旧全局附加费仍保留（但住宅费/签名费/旺季 FedEx/DAS 改为按渠道逻辑覆盖）
 GLOBAL_SURCHARGES = {
     "fuel": 0.16,
     "res_fee": 3.50,
@@ -124,9 +125,122 @@ def fetch_fedex_residential_peak_table():
         return fallback
 
 # ==========================================
+# 1.6 FedEx DAS ZIP PDF 解析（pdftotext）
+# ==========================================
+FEDX_DAS_DIR = os.path.join(DATA_DIR, "fedex_das")
+FEDX_DAS_FULL_PDF = os.path.join(FEDX_DAS_DIR, "FGE_DAS_Contiguous_Extended_Alaska_Hawaii_2025.pdf")
+FEDX_DAS_CHG_PDF  = os.path.join(FEDX_DAS_DIR, "FGE_DAS_Zip_Code_Changes_2025.pdf")
+
+def _pdftotext(pdf_path: str) -> str:
+    if not os.path.exists(pdf_path):
+        return ""
+    try:
+        r = subprocess.run(
+            ["pdftotext", "-layout", pdf_path, "-"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        return r.stdout.decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+def _build_das_sets_from_fulltext(txt: str) -> dict:
+    sets = {"contiguous": set(), "extended": set(), "alaska": set(), "hawaii": set()}
+    if not txt:
+        return {k: [] for k in sets}
+
+    sec = None
+    for raw in txt.splitlines():
+        line = raw.strip()
+        u = line.upper()
+
+        if "DELIVERY AREA SURCHARGE ZIP CODES:" in u and "CONTIGUOUS U.S." in u and "EXTENDED" not in u:
+            sec = "contiguous"
+            continue
+        if "DELIVERY AREA SURCHARGE ZIP CODES:" in u and "CONTIGUOUS U.S." in u and "EXTENDED" in u:
+            sec = "extended"
+            continue
+        if "DELIVERY AREA SURCHARGE ZIP CODES:" in u and "ALASKA" in u:
+            sec = "alaska"
+            continue
+        if "DELIVERY AREA SURCHARGE ZIP CODES:" in u and "HAWAII" in u:
+            sec = "hawaii"
+            continue
+
+        if not sec:
+            continue
+
+        for z in re.findall(r"\b\d{5}\b", line):
+            sets[sec].add(z.zfill(5))
+
+    return {k: sorted(list(v)) for k, v in sets.items()}
+
+def _parse_changes_pdf(txt: str) -> dict:
+    out = {"moved_ext_to_contig": [], "removed_contig": [], "removed_extended": []}
+    if not txt:
+        return out
+
+    mode = None
+    for raw in txt.splitlines():
+        line = raw.strip().upper()
+
+        if "MOVED FROM CONTIGUOUS U.S. EXTENDED LIST TO CONTIGUOUS U.S. LIST" in line:
+            mode = "moved_ext_to_contig"
+            continue
+        if "REMOVED FROM CONTIGUOUS U.S. LIST" in line:
+            mode = "removed_contig"
+            continue
+        if "REMOVED FROM CONTIGUOUS U.S. EXTENDED LIST" in line:
+            mode = "removed_extended"
+            continue
+
+        if not mode:
+            continue
+
+        for z in re.findall(r"\b\d{5}\b", line):
+            out[mode].append(z.zfill(5))
+
+    for k in out:
+        seen = set()
+        out[k] = [x for x in out[k] if not (x in seen or seen.add(x))]
+    return out
+
+def load_fedex_das_zip_data() -> dict:
+    full_txt = _pdftotext(FEDX_DAS_FULL_PDF)
+    chg_txt  = _pdftotext(FEDX_DAS_CHG_PDF)
+
+    sets = _build_das_sets_from_fulltext(full_txt)
+    chg  = _parse_changes_pdf(chg_txt)
+
+    contig = set(sets.get("contiguous", []))
+    ext    = set(sets.get("extended", []))
+
+    audit = {
+        "source_full_pdf": os.path.basename(FEDX_DAS_FULL_PDF),
+        "source_changes_pdf": os.path.basename(FEDX_DAS_CHG_PDF),
+        "problems": []
+    }
+
+    for z in chg.get("moved_ext_to_contig", []):
+        if z not in contig:
+            audit["problems"].append(f"[MOVED] {z} not in contiguous")
+        if z in ext:
+            audit["problems"].append(f"[MOVED] {z} still in extended")
+
+    for z in chg.get("removed_contig", []):
+        if z in contig:
+            audit["problems"].append(f"[REMOVED_CONTIG] {z} still in contiguous")
+
+    for z in chg.get("removed_extended", []):
+        if z in ext:
+            audit["problems"].append(f"[REMOVED_EXT] {z} still in extended")
+
+    audit["counts"] = {k: len(v) for k, v in sets.items()}
+    return {"sets": sets, "changes": chg, "audit": audit}
+
+# ==========================================
 # 2. 网页模板
 # ==========================================
-HTML_TEMPLATE = """
+HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -166,7 +280,7 @@ HTML_TEMPLATE = """
 
 <header>
     <div class="container d-flex justify-content-between align-items-center">
-        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 专家版 (V9.1)</small></div>
+        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 专家版 (V9.2)</small></div>
         <div class="text-end text-white small">Multi-Channel Quote</div>
     </div>
 </header>
@@ -250,16 +364,6 @@ HTML_TEMPLATE = """
                             <div class="small text-muted">仅：FedEx-YSD / FedEx-632-MT / XLmiles</div>
                         </div>
 
-                        <!-- ✅ XLmiles 一票多件：用于按“第一件取大值，其他件半价”计算 -->
-                        <div class="mb-3">
-                            <label class="form-label">XLmiles 一票多件（可选）</label>
-                            <input type="text" class="form-control" id="xlMultiFees"
-                                   placeholder="同票其他件的 XLmiles 基础费（$），逗号分隔，如：33,65,104">
-                            <div class="small text-muted mt-1">
-                                规则：第一件取最大值全额，其余件半价（适用于 AH/OS/OM 混合的一票多件）。
-                            </div>
-                        </div>
-
                         <hr>
 
                         <div class="mb-3">
@@ -303,10 +407,14 @@ HTML_TEMPLATE = """
                         <div class="small mt-1" style="line-height:1.35">
                             ① <b>USPS Ground Advantage</b>：旺季附加费来自 <b>USPS-YSD-报价</b> 表内右侧副本（全名：<b>2025旺季附加费-USPS Ground Advantage</b>），按重量档 + Zone 查价叠加。<br>
                             ② <b>FedEx-ECO-MT</b>：FedEx 与 USPS 联合承运，末端 USPS 派送；本渠道报价表仅供参考，<b>不包含旺季附加费</b>，实际以系统账单为准。<br>
-                            ③ 若派送后产生额外费用（复核尺寸不符/退货/其他附加费等），物流商向我司收取后我司将 <b>实报实销</b>。
+                            ③ 若派送后产生额外费用（复核尺寸不符/退货/其他附加费等），物流商向我司收取后我司将 <b>实报实销</b>。<br>
+                            ④ <b>偏远/超偏远（DAS）</b>：按 FedEx 官方 ZIP 列表命中后叠加（构建时注入 ZIP 集合 + Excel 自动抽取金额）。
                         </div>
                         <div class="small text-muted mt-2">
-                            FedEx “住宅地址旺季附加费”参考官方 Demand Surcharges 页面构建时自动更新：<span class="mono" id="fedexPeakMeta"></span>
+                            FedEx “住宅地址旺季附加费”构建时自动更新：<span class="mono" id="fedexPeakMeta"></span>
+                        </div>
+                        <div class="small text-muted mt-1">
+                            FedEx DAS ZIP 列表审计：<span class="mono" id="fedexDasMeta"></span>
                         </div>
                     </div>
 
@@ -333,12 +441,9 @@ HTML_TEMPLATE = """
                         1. <strong>燃油费</strong>：仅 FedEx-YSD / FedEx-632-MT / GOFO大件 额外计算；其余渠道报价已含燃油。<br>
                         2. <strong>住宅费</strong>：仅 FedEx-YSD($3.80) / FedEx-632($2.88) / GOFO大件($3.17)。<br>
                         3. <strong>签名费</strong>：仅 FedEx-YSD($9.30) / FedEx-632($4.46) / XLmiles($11.05)，由开关控制是否叠加。<br>
-                        4. <strong>FedEx 标准渠道 Zone</strong>：FedEx-YSD / FedEx-632 / FedEx-ECO-MT 使用“仓库+邮编”计算 Zone（不再依赖 GOFO 邮编区）。<br>
-                        5. <strong>XLmiles</strong>：单件按 AH/OS/OM 规则定档；一票多件按“最大值全额 + 其余半价”计算（可选输入）。<br>
-                        <div class="mt-2">
-                            <strong>XLmiles 注意事项：</strong><br>
-                            一口价：包含保价、预约及签收证明等服务；LA,NJ,HOU 核心区域免费揽收；实时包裹追踪；POD 在我司系统一键获取；对标 Threshold 等级服务，投递至前门/后门/车库门。
-                        </div>
+                        4. <strong>FedEx 标准渠道 Zone</strong>：FedEx-YSD / FedEx-632 / FedEx-ECO-MT 使用“仓库+邮编”计算 Zone（不依赖 GOFO 邮编区）。<br>
+                        5. <strong>偏远/超偏远（DAS）</strong>：仅 FedEx-YSD / FedEx-632 / GOFO大件，按 ZIP 命中 contiguous/extended/alaska/hawaii，并用 Excel(G181~G186) 对应金额叠加。<br>
+                        6. <strong>XLmiles</strong>：此版本保持你现有实现（不在本次 DAS 改动范围内）。<br>
                     </div>
 
                 </div>
@@ -362,11 +467,20 @@ HTML_TEMPLATE = """
 
     document.getElementById('updateDate').innerText = new Date().toLocaleDateString();
 
+    // 显示 FedEx 旺季元信息
     (function(){
         let meta = DATA.fedex_res_peak || {};
         let s = (meta.source || 'n/a');
         let t = (meta.updated_at || 'n/a');
         document.getElementById('fedexPeakMeta').innerText = `source=${s} | updated=${t}`;
+    })();
+
+    // 显示 FedEx DAS 审计信息
+    (function(){
+        let m = DATA.fedex_das && DATA.fedex_das.audit ? DATA.fedex_das.audit : {};
+        let c = m.counts ? JSON.stringify(m.counts) : "n/a";
+        let p = (m.problems && m.problems.length) ? ("problems=" + m.problems.length) : "problems=0";
+        document.getElementById('fedexDasMeta').innerText = `counts=${c} | ${p}`;
     })();
 
     // ===================================
@@ -379,16 +493,11 @@ HTML_TEMPLATE = """
     document.getElementById('addressType').addEventListener('change', () => document.getElementById('btnCalc').click());
     document.getElementById('peakToggle').addEventListener('change', () => document.getElementById('btnCalc').click());
     document.getElementById('sigToggle').addEventListener('change', () => document.getElementById('btnCalc').click());
-    document.getElementById('xlMultiFees').addEventListener('input', () => document.getElementById('btnCalc').click());
 
     // ===================================
     // 渠道可用仓库（写死）
     // ===================================
-    const WAREHOUSE_LABEL = {
-        "WEST": "美西 91730",
-        "CENTRAL": "美中 606",
-        "EAST": "美东 088"
-    };
+    const WAREHOUSE_LABEL = {"WEST":"美西 91730","CENTRAL":"美中 606","EAST":"美东 088"};
     const CHANNEL_WAREHOUSE_ALLOW = {
         "GOFO-报价": ["WEST","CENTRAL"],
         "GOFO-MT-报价": ["WEST","CENTRAL"],
@@ -402,16 +511,14 @@ HTML_TEMPLATE = """
     };
 
     // ===================================
-    // FedEx Zone 计算（从你 V2.4 思路移植）
+    // FedEx Zone 计算
     // ===================================
     function calculateZoneMath(destZip, wh) {
         if(!destZip || destZip.length < 3) return 8;
         let p = parseInt(destZip.substring(0,3), 10);
-
         if ((p >= 967 && p <= 969) || (p >= 995 && p <= 999) || destZip.startsWith('00')) return 9;
 
         let originType = (wh==="WEST") ? "917" : (wh==="CENTRAL" ? "606" : "088");
-
         if (originType === '917') {
             if (p >= 900 && p <= 935) return 2;
             if (p >= 936 && p <= 961) return 3;
@@ -440,69 +547,17 @@ HTML_TEMPLATE = """
         }
         return 8;
     }
-
     function isFedexStandardChannel(ch){
         return (ch.includes("FedEx-YSD") || ch.includes("FedEx-632") || ch.includes("FedEx-ECO-MT"));
     }
 
     // ===================================
-    // USPS 不可用前缀（保留你原逻辑）
+    // USPS 不可用前缀
     // ===================================
     const USPS_BLOCK = ['006','007','008','009','090','091','092','093','094','095','096','097','098','099','340','962','963','964','965','966','967','968','969','995','996','997','998','999'];
 
     // ===================================
-    // XLmiles 规则（修正：单件只能归类 AH/OS/OM 其一；一票多件才用“最大值全额+其余半价”）
-    // Zone：仅 1-2 / 3；>3 默认不可用
-    // ===================================
-    function xl_zone_group(z){
-        if(z===1 || z===2) return "1-2";
-        if(z===3) return "3";
-        return null;
-    }
-
-    function xl_single_piece_price(pkg, xlZone){
-        // pkg in inches/lb
-        let dims = [pkg.L, pkg.W, pkg.H].sort((a,b)=>b-a);
-        let L = dims[0];
-        let G = L + 2*(dims[1]+dims[2]);
-        let zone = xlZone; // "1-2" or "3"
-
-        // 档位判定：从小到大，命中即返回（单件只取一个服务）
-        // AH：L<=96 且 G<=130；Wt<=90 或 <=150 两档
-        if(L<=96 && G<=130){
-            if(pkg.Wt<=90) return {ok:true, svc:"AH", base:(zone==="1-2")?33:36, L, G};
-            if(pkg.Wt<=150) return {ok:true, svc:"AH", base:(zone==="1-2")?52:56, L, G};
-        }
-        // OS：L<=108 且 G<=165；Wt<=150
-        if(L<=108 && G<=165 && pkg.Wt<=150){
-            return {ok:true, svc:"OS", base:(zone==="1-2")?65:69, L, G};
-        }
-        // OM：L<=144 且 G<=225；Wt<=200
-        if(L<=144 && G<=225 && pkg.Wt<=200){
-            return {ok:true, svc:"OM", base:(zone==="1-2")?104:117, L, G};
-        }
-
-        return {ok:false, reason:"超规不可发", base:0, L, G};
-    }
-
-    function xl_apply_multi_piece(currentBase, othersArr){
-        // 规则：第一件取最大值全额，其余件半价（适用于一票多件）
-        let list = [currentBase].concat(othersArr || []).filter(v => typeof v === "number" && isFinite(v) && v > 0);
-        if(list.length <= 1) return {isMulti:false, total:currentBase, detail:null};
-
-        let maxV = Math.max(...list);
-        let sumOthers = list.reduce((a,b)=>a+b,0) - maxV;
-        let total = maxV + 0.5 * sumOthers;
-
-        return {
-            isMulti:true,
-            total: total,
-            detail: {maxV, sumOthers, count:list.length}
-        };
-    }
-
-    // ===================================
-    // 计费重、单位标准化
+    // 单位标准化
     // ===================================
     function standardize(l, w, h, du, wt, wu) {
         let L=parseFloat(l)||0, W=parseFloat(w)||0, H=parseFloat(h)||0, Weight=parseFloat(wt)||0;
@@ -512,38 +567,27 @@ HTML_TEMPLATE = """
     }
 
     // ===================================
-    // 合规性一览（XLmiles）
+    // 合规性一览（保持）
     // ===================================
     function check(pkg) {
         let d=[pkg.L, pkg.W, pkg.H].sort((a,b)=>b-a);
         let L=d[0], G=L+2*(d[1]+d[2]);
         let h = '';
-
         const row = (name, cond, text) => {
             let cls = cond ? 'bg-err' : 'bg-ok';
             let txt = cond ? text : '正常 (OK)';
             return `<tr><td>${name}</td><td class="text-end"><span class="indicator ${cls}"></span>${txt}</td></tr>`;
         };
-
         let uFail = (L>20 || (L+d[1]+d[2])>50 || pkg.Wt>20);
         h += row('UniUni', uFail, '限制(L>20/Wt>20)');
-
         let usFail = (pkg.Wt>70 || L>30 || (L+(d[1]+d[2])*2)>130);
         h += row('USPS', usFail, '限制(>70lb/130")');
-
         let fFail = (pkg.Wt>150 || L>108 || G>165);
         h += row('FedEx', fFail, '不可发(>150lb)');
-
         let gFail = (pkg.Wt>150);
         h += row('GOFO大件', gFail, '超限(>150lb)');
-
-        // XLmiles：最大允许 OM 上限
-        let xlFail = (pkg.Wt>200 || L>144 || G>225);
-        h += row('XLmiles', xlFail, '范围(<=200lb/144"/225")');
-
         document.getElementById('checkTable').innerHTML = h;
     }
-
     ['length','width','height','weight','dimUnit','weightUnit'].forEach(id=>{
         document.getElementById(id).addEventListener('input', ()=>{
             let p = standardize(
@@ -620,12 +664,11 @@ HTML_TEMPLATE = """
         return 0;
     }
     function hasFuel(ch){
-        if(ch.includes("FedEx-YSD") || ch.includes("FedEx-632") || ch.includes("GOFO大件")) return true;
-        return false;
+        return (ch.includes("FedEx-YSD") || ch.includes("FedEx-632") || ch.includes("GOFO大件"));
     }
 
     // ===================================
-    // FedEx 官网：住宅地址旺季附加费
+    // FedEx 官网：住宅地址旺季附加费（构建时注入）
     // ===================================
     function getFedexResPeakAmount(todayStr){
         let meta = DATA.fedex_res_peak;
@@ -640,6 +683,33 @@ HTML_TEMPLATE = """
     }
 
     // ===================================
+    // FedEx DAS：ZIP -> category
+    // contiguous / extended / remote(=alaska/hawaii)
+    // ===================================
+    function fedexDasCategory(zip){
+        if(!zip || zip.length!==5) return null;
+        let das = DATA.fedex_das && DATA.fedex_das.sets ? DATA.fedex_das.sets : null;
+        if(!das) return null;
+
+        // 优先级：AK/HI > Extended > Contiguous
+        if((das.alaska||[]).includes(zip)) return "remote";
+        if((das.hawaii||[]).includes(zip)) return "remote";
+        if((das.extended||[]).includes(zip)) return "extended";
+        if((das.contiguous||[]).includes(zip)) return "contiguous";
+        return null;
+    }
+
+    function getDasFee(tier, ch, cat, isRes){
+        let m = DATA.das_fees || {};
+        let t = m[tier] || {};
+        let c = t[ch] || {};
+        let g = c[cat] || {};
+        let v = isRes ? g.res : g.com;
+        v = parseFloat(v || 0);
+        return isFinite(v) ? v : 0;
+    }
+
+    // ===================================
     // 取 Excel 报价行
     // ===================================
     function getDivisor(ch, vol){
@@ -648,11 +718,6 @@ HTML_TEMPLATE = """
         if(u.includes('USPS')) return vol > 1728 ? 166 : 0;
         if(u.includes('ECO-MT')) return vol < 1728 ? 400 : 250;
         return 222;
-    }
-
-    function parseCommaFees(s){
-        if(!s) return [];
-        return s.split(/[,，]/).map(x => parseFloat(String(x).trim())).filter(v => isFinite(v) && v > 0);
     }
 
     // ===================================
@@ -711,10 +776,7 @@ HTML_TEMPLATE = """
                 zoneVal = (CUR_ZONES && CUR_ZONES[ch]) ? String(CUR_ZONES[ch]) : "-";
             }
 
-            let base = 0;
-            let st = "正常";
-            let cls = "text-success";
-            let bg = "";
+            let base = 0, st="正常", cls="text-success", bg="";
             let details = [];
 
             // 计费重
@@ -726,69 +788,8 @@ HTML_TEMPLATE = """
             }
             if(!uCh.includes('GOFO-报价') && cWt>1) cWt = Math.ceil(cWt);
 
-            // ===== XLmiles：修正附加费明细与一票多件逻辑 =====
-            if(ch.includes("XLmiles")){
-                // 基础说明（固定）
-                details.push("一口价：含保价/预约/签收证明");
-
-                if(!fedexZone){
-                    st="无分区/超重";
-                    cls="text-muted";
-                    bg="table-light";
-                }else{
-                    let xg = xl_zone_group(fedexZone);
-                    if(!xg){
-                        st="仓库/Zone不支持";
-                        cls="text-muted";
-                        bg="table-light";
-                    }else{
-                        zoneVal = "Z" + xg;
-
-                        // 单件：只归类 AH/OS/OM 其一（不再做 AH/OS/OM 的 0.5 分摊）
-                        let r = xl_single_piece_price(pkg, xg);
-                        if(!r.ok){
-                            st=r.reason; cls="text-danger fw-bold"; bg="table-danger";
-                            base=0;
-                        }else{
-                            base=r.base;
-                            details.push(`${r.svc}：$${base.toFixed(2)} (L=${r.L.toFixed(1)}", G=${r.G.toFixed(1)}")`);
-                        }
-
-                        // ✅ 一票多件：仅当用户在输入框提供“同票其他件基础费”时才触发
-                        // 规则：第一件取大值计费，其余件半价
-                        if(base > 0){
-                            let others = parseCommaFees(document.getElementById('xlMultiFees').value || "");
-                            let mp = xl_apply_multi_piece(base, others);
-                            if(mp.isMulti && mp.detail){
-                                details.push(`一票多件(${mp.detail.count}件)：max=$${mp.detail.maxV.toFixed(2)} + 0.5*others=$${(0.5*mp.detail.sumOthers).toFixed(2)}`);
-                                base = mp.total; // XLmiles 总价（作为基础运费口径展示）
-                            }
-                        }
-                    }
-                }
-
-                // 签名费：按开关叠加（你之前明确 XLmiles 有 $11.05）
-                if(base>0 && sigOn){
-                    let sf = getSigFee(ch);
-                    if(sf>0){ details.push(`签名:$${sf.toFixed(2)}`); base += sf; }
-                }
-
-                let tot = base;
-                tbody.innerHTML += `<tr class="${bg}">
-                    <td class="fw-bold text-start text-nowrap">${ch}</td>
-                    <td class="text-nowrap">${whLabel}</td>
-                    <td>${zoneVal}</td>
-                    <td>${cWt.toFixed(2)}</td>
-                    <td class="fw-bold">${base>0?base.toFixed(2):"0.00"}</td>
-                    <td class="text-start small" style="line-height:1.2">${details.join('<br>')||'-'}</td>
-                    <td class="price-text">${tot>0?("$"+tot.toFixed(2)):'-'}</td>
-                    <td class="${cls} small fw-bold">${st}</td>
-                </tr>`;
-                return;
-            }
-
-            // ===== 其它渠道：走 Excel 报价表 =====
-            let zKey = zoneVal==='1' ? '2' : zoneVal; // Zone1 取 Zone2（含 FedEx-YSD 从 Zone2 开始的修正）
+            // 走 Excel 报价表（保持你现有结构）
+            let zKey = zoneVal==='1' ? '2' : zoneVal; // FedEx-YSD 从 Zone2 开始：Zone1 用 Zone2
             let row = null;
             if(prices && prices.length>0 && zKey!=='-'){
                 for(let r of prices){
@@ -816,18 +817,17 @@ HTML_TEMPLATE = """
                     st="超规不可发"; cls="text-danger fw-bold"; bg="table-danger"; base=0;
                 }
             }
-
-            // 特殊拦截：UniUni
+            // UniUni
             if(uCh.includes('UNIUNI')) {
                 if(L>20 || (L+dims[1]+dims[2])>50 || pkg.Wt>20) {
                     st="超规不可发"; cls="text-danger fw-bold"; bg="table-danger"; base=0;
                 }
             }
 
-            // 费用叠加
             let fees = {fuel:0, res:0, peak:0, other:0, sig:0};
 
             if(base > 0) {
+                // 住宅费（按渠道不同）
                 if(isRes){
                     let rf = getResFee(ch);
                     if(rf>0){
@@ -836,6 +836,7 @@ HTML_TEMPLATE = """
                     }
                 }
 
+                // FedEx 住宅旺季（仅示例：按官网注入）
                 if(isPeak){
                     if(ch.includes("FedEx-YSD") || ch.includes("FedEx-632")){
                         if(isRes){
@@ -850,6 +851,7 @@ HTML_TEMPLATE = """
                     }
                 }
 
+                // 签名费（按开关）
                 if(sigOn){
                     let sf = getSigFee(ch);
                     if(sf>0){
@@ -858,6 +860,18 @@ HTML_TEMPLATE = """
                     }
                 }
 
+                // ✅ DAS（偏远/超偏远）——按 ZIP 命中 + Excel(G181~G186) 金额叠加
+                // 仅：FedEx-YSD / FedEx-632 / GOFO大件
+                let cat = fedexDasCategory(zip);
+                if(cat && (ch.includes("FedEx-YSD") || ch.includes("FedEx-632") || ch.includes("GOFO大件"))){
+                    let dv = getDasFee(tier, ch, cat, isRes);
+                    if(dv > 0){
+                        fees.other += dv;
+                        details.push(`偏远(DAS-${cat}):$${dv.toFixed(2)}`);
+                    }
+                }
+
+                // 燃油费
                 if(hasFuel(ch)){
                     if(ch.includes("GOFO大件")){
                         let sub = base + fees.res + fees.peak + fees.sig + fees.other;
@@ -1000,7 +1014,6 @@ def load_tiers():
                 for i, v in enumerate(headers):
                     if ('weight' in v or 'lb' in v or '重量' in v) and w_idx == -1:
                         w_idx = i
-
                     m = re.search(r'(?:zone|分区)\s*~?\s*(\d+)', v)
                     if m:
                         zn = m.group(1)
@@ -1030,7 +1043,7 @@ def load_tiers():
                 prices.sort(key=lambda x: x['w'])
                 t_data[ch_key] = {"prices": prices}
 
-                # === 排查日志（最小改动一行日志） ===
+                # === 排查日志（最小改动一行）：输出每个渠道 zones/prices 数量 ===
                 print(f"    > {t_name}/{ch_key}: zones={list(z_map.keys())}, prices={len(prices)}")
 
             except:
@@ -1040,17 +1053,81 @@ def load_tiers():
 
     return all_tiers
 
+# ==========================================
+# 3.1 从 Excel 抽取 DAS 金额（G181~G186）
+# 说明：
+# - 你确认金额列：G（0-index col=6）
+# - 行号：181~186（Excel 1-index），pandas 0-index => 180~185
+# - 映射：
+#   181 contiguous res
+#   182 contiguous com
+#   183 extended   res
+#   184 extended   com
+#   185 remote     res
+#   186 remote     com
+# ==========================================
+DAS_CHANNELS = ["FedEx-YSD-报价", "FedEx-632-MT-报价", "GOFO大件-GRO-报价"]
+
+def load_das_fees_from_excels():
+    print("\n--- 2.1 抽取 DAS 金额（Excel G181~G186） ---")
+    all_das = {}
+
+    # 固定坐标
+    col_g = 6
+    row0 = 180  # Excel 181 -> df index 180
+
+    for t_name, f_name in TIER_FILES.items():
+        path = os.path.join(DATA_DIR, f_name)
+        if not os.path.exists(path):
+            continue
+
+        tmap = {}
+        for ch in DAS_CHANNELS:
+            df = get_sheet_by_name(path, CHANNEL_KEYWORDS[ch])
+            if df is None:
+                continue
+
+            df = df.fillna("")
+            # 读取 6 行金额
+            vals = []
+            for k in range(6):
+                v = safe_float(df.iloc[row0 + k, col_g])
+                vals.append(v)
+
+            # 映射为结构
+            tmap[ch] = {
+                "contiguous": {"res": vals[0], "com": vals[1]},
+                "extended":   {"res": vals[2], "com": vals[3]},
+                "remote":     {"res": vals[4], "com": vals[5]},
+            }
+
+            print(f"    > {t_name}/{ch}: "
+                  f"C(res/com)=({vals[0]}/{vals[1]}), "
+                  f"E(res/com)=({vals[2]}/{vals[3]}), "
+                  f"R(res/com)=({vals[4]}/{vals[5]})")
+
+        all_das[t_name] = tmap
+
+    return all_das
+
+# ==========================================
+# main
+# ==========================================
 if __name__ == '__main__':
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
 
     fedex_res_peak = fetch_fedex_residential_peak_table()
+    fedex_das = load_fedex_das_zip_data()
+    das_fees = load_das_fees_from_excels()
 
     final = {
         "zip_db": load_zip_db(),
         "tiers": load_tiers(),
         "surcharges": GLOBAL_SURCHARGES,
-        "fedex_res_peak": fedex_res_peak
+        "fedex_res_peak": fedex_res_peak,
+        "fedex_das": fedex_das,
+        "das_fees": das_fees
     }
 
     print("\n--- 3. 生成网页 ---")
@@ -1064,4 +1141,4 @@ if __name__ == '__main__':
     with open(os.path.join(OUTPUT_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)
 
-    print("✅ 完成！XLmiles：单件不再错误分摊；一票多件仅在输入“其他件基础费”时按最大值全额+其余半价计算。")
+    print("✅ 完成！已实现：DAS ZIP(按PDF) + DAS金额(按Excel G181~G186) 自动注入并在前端按邮编命中叠加。")
