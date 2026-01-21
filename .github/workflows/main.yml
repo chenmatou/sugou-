@@ -1,13 +1,12 @@
 name: Deploy Quote Tool
 
-# 触发机制：推送到 main 分支时自动运行 + 手动触发 + 每天定时运行（UTC）
 on:
   push:
     branches:
       - main
   workflow_dispatch:
   schedule:
-    - cron: "0 1 * * *"  # 每天 UTC 01:00（北京时间 09:00）
+    - cron: "0 2 * * *" # 每天 UTC 02:00 跑一次（需要可自行改）
 
 permissions:
   contents: write
@@ -24,7 +23,11 @@ jobs:
         with:
           python-version: '3.9'
 
-      # 👇👇👇 关键修改：直接安装，不再读取 txt 文件，防止报错 👇👇👇
+      - name: Install system deps (pdftotext)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils
+
       - name: Install dependencies (安装依赖库)
         run: |
           pip install pandas openpyxl
