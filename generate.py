@@ -854,9 +854,14 @@ def load_usps_peak_table():
         return []
 
     df = df.fillna("")
+
+    # ✅ 仅新增 1 行日志（排查用）：防止越界时可确认行列数
+    print(f"    > USPS旺季表sheet维度: rows={len(df)}, cols={df.shape[1] if hasattr(df,'shape') else 'NA'}")
+
     h_row = None
     # 找表头：同时出现（旺季附加费/2025旺季附加费）与（zone/分区）与（weight/重量）
-    for i in range(80):
+    scan_n = min(80, len(df))  # ✅ 修复：避免 df 行数不足时 iloc 越界
+    for i in range(scan_n):
         row_str = " ".join(df.iloc[i].astype(str).values).lower().replace(" ", "")
         if (("旺季附加费" in row_str) or ("2025" in row_str)) and (("zone" in row_str) or ("分区" in row_str)) and (("weight" in row_str) or ("重量" in row_str) or ("lb" in row_str)):
             h_row = i
@@ -919,7 +924,8 @@ def load_tiers():
             try:
                 h_row = 0
                 # 寻找表头行：兼容 中文 '重量','分区' 及 英文 'weight','zone'
-                for i in range(80):
+                scan_n = min(80, len(df))  # ✅ 修复：避免 df 行数不足时 iloc 越界
+                for i in range(scan_n):
                     row_str = " ".join(df.iloc[i].astype(str).values).lower()
                     has_zone = ("zone" in row_str or "分区" in row_str)
                     has_weight = ("weight" in row_str or "lb" in row_str or "重量" in row_str)
