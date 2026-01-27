@@ -3,44 +3,51 @@ import json
 import re
 import os
 import warnings
-from datetime import datetime
+from datetime import datetime, date
 from urllib.request import urlopen, Request
+
+# === 新增：解析 PDF（DAS zip list） ===
+# Actions 里会 pip install pypdf（见下方 workflow）
+try:
+    from pypdf import PdfReader
+except Exception:
+    PdfReader = None
 
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 # ==========================================
-# 1) 全局配置
+# 1. 全局配置
 # ==========================================
 DATA_DIR = "data"
 OUTPUT_DIR = "public"
 
 TIER_FILES = {"T0": "T0.xlsx", "T1": "T1.xlsx", "T2": "T2.xlsx", "T3": "T3.xlsx"}
 
-# 你工具里“渠道 key”统一用这些（不要随意改名，否则 ZIP 映射/allowlist/解析都对不上）
-CHANNEL_KEYS = [
-    "GOFO-报价",
-    "GOFO-MT-报价",     # 合并 UNIUNI 的 sheet 里第一块
-    "UNIUNI-MT-报价",   # 合并 UNIUNI 的 sheet 里第二块
-    "USPS-YSD-报价",
-    "FedEx-ECO-MT报价",
-    "XLmiles-报价",
-    "GOFO大件-GRO-报价",
-    "FedEx-632-MT-报价",
-    # 其它渠道后续再加
-]
+# === 渠道 Sheet 匹配关键词（保持你原结构，不乱改）===
+# 你已“取消 FedEx-YSD”，这里从关键词里移除，避免生成数据里还出现它
+CHANNEL_KEYWORDS = {
+    "GOFO-报价": ["GOFO", "报价"],
+    "GOFO-MT-报价": ["GOFO", "MT"],
+    "UNIUNI-MT-报价": ["UNIUNI"],
+    "USPS-YSD-报价": ["USPS"],
+    "FedEx-ECO-MT报价": ["ECO", "MT"],
+    "XLmiles-报价": ["XLmiles"],
+    "GOFO大件-GRO-报价": ["GOFO", "大件"],
+    "FedEx-632-MT-报价": ["632"],
+    # 新增：FedEx-MT-超大包裹-报价、FedEx-MT-危险品-报价（按你模板）
+    "FedEx-MT-超大包裹-报价": ["FedEx", "超大"],
+    "FedEx-MT-危险品-报价": ["FedEx", "危险"],
+    # 新增：GOFO大件-MT-报价（你模板里写了）
+    "GOFO大件-MT-报价": ["GOFO", "大件", "MT"],
+}
 
-# 邮编库仍来自 GOFO-报价（保持不动）
+# 邮编库：GOFO 邮编区（保持你原逻辑）
 ZIP_DB_SHEET_KEY = "GOFO-报价"
 ZIP_COL_MAP = {
-    "GOFO-报价": 5,
-    "GOFO-MT-报价": 6,
-    "UNIUNI-MT-报价": 7,
-    "USPS-YSD-报价": 8,
-    "FedEx-ECO-MT报价": 9,
-    "XLmiles-报价": 10,
-    "GOFO大件-GRO-报价": 11,
-    "FedEx-632-MT-报价": 12,
-    # "FedEx-YSD-报价": 13,  # 你已取消 FedEx-YSD
+    "GOFO-报价": 5, "GOFO-MT-报价": 6, "UNIUNI-MT-报价": 7, "USPS-YSD-报价": 8,
+    "FedEx-ECO-MT报价": 9, "XLmiles-报价": 10, "GOFO大件-GRO-报价": 11,
+    "FedEx-632-MT-报价": 12
+    # FedEx-YSD 已取消，不保留列
 }
 
 GLOBAL_SURCHARGES = {
@@ -50,21 +57,21 @@ GLOBAL_SURCHARGES = {
 }
 
 US_STATES_CN = {
-    'AL':'阿拉巴马','AK':'阿拉斯加','AZ':'亚利桑那','AR':'阿肯色','CA':'加利福尼亚',
-    'CO':'科罗拉多','CT':'康涅狄格','DE':'特拉华','FL':'佛罗里达','GA':'佐治亚',
-    'HI':'夏威夷','ID':'爱达荷','IL':'伊利诺伊','IN':'印第安纳','IA':'爱荷华',
-    'KS':'堪萨斯','KY':'肯塔基','LA':'路易斯安那','ME':'缅因','MD':'马里兰',
-    'MA':'马萨诸塞','MI':'密歇根','MN':'明尼苏达','MS':'密西西比','MO':'密苏里',
-    'MT':'蒙大拿','NE':'内布拉斯加','NV':'内华达','NH':'新罕布什尔','NJ':'新泽西',
-    'NM':'新墨西哥','NY':'纽约','NC':'北卡罗来纳','ND':'北达科他','OH':'俄亥俄',
-    'OK':'俄克拉荷马','OR':'俄勒冈','PA':'宾夕法尼亚','RI':'罗德岛','SC':'南卡罗来纳',
-    'SD':'南达科他','TN':'田纳西','TX':'德克萨斯','UT':'犹他','VT':'佛蒙特',
-    'VA':'弗吉尼亚','WA':'华盛顿','WV':'西弗吉尼亚','WI':'威斯康星','WY':'怀俄明',
-    'DC':'华盛顿特区'
+    'AL': '阿拉巴马', 'AK': '阿拉斯加', 'AZ': '亚利桑那', 'AR': '阿肯色', 'CA': '加利福尼亚',
+    'CO': '科罗拉多', 'CT': '康涅狄格', 'DE': '特拉华', 'FL': '佛罗里达', 'GA': '佐治亚',
+    'HI': '夏威夷', 'ID': '爱达荷', 'IL': '伊利诺伊', 'IN': '印第安纳', 'IA': '爱荷华',
+    'KS': '堪萨斯', 'KY': '肯塔基', 'LA': '路易斯安那', 'ME': '缅因', 'MD': '马里兰',
+    'MA': '马萨诸塞', 'MI': '密歇根', 'MN': '明尼苏达', 'MS': '密西西比', 'MO': '密苏里',
+    'MT': '蒙大拿', 'NE': '内布拉斯加', 'NV': '内华达', 'NH': '新罕布什尔', 'NJ': '新泽西',
+    'NM': '新墨西哥', 'NY': '纽约', 'NC': '北卡罗来纳', 'ND': '北达科他', 'OH': '俄亥俄',
+    'OK': '俄克拉荷马', 'OR': '俄勒冈', 'PA': '宾夕法尼亚', 'RI': '罗德岛', 'SC': '南卡罗来纳',
+    'SD': '南达科他', 'TN': '田纳西', 'TX': '德克萨斯', 'UT': '犹他', 'VT': '佛蒙特',
+    'VA': '弗吉尼亚', 'WA': '华盛顿', 'WV': '西弗吉尼亚', 'WI': '威斯康星', 'WY': '怀俄明',
+    'DC': '华盛顿特区'
 }
 
 # ==========================================
-# 2) 仓库清单（按你模板：数字仅编号；用于可用渠道过滤 + FedEx Zone 归类）
+# 1.1 仓库（你说“数字只是编号，不用管”，但要显示出来、要做可用渠道过滤）
 # ==========================================
 WAREHOUSES = [
     {"code": "60632", "label": "SureGo美中芝加哥-60632仓", "region": "CENTRAL"},
@@ -76,179 +83,265 @@ WAREHOUSES = [
     {"code": "07032", "label": "SureGo美东新泽西-07032仓", "region": "EAST"},
     {"code": "63461", "label": "SureGo退货检测-美中密苏里63461退货仓", "region": "RETURN"},
 ]
+WAREHOUSE_MAP = {w["code"]: w for w in WAREHOUSES}
 
-# 渠道 ↔ 仓库可用（写死）：你模板里“美西/美中/美东”我这里按仓库 code 精确控制
+# ==========================================
+# 1.2 渠道 ↔ 仓库可用映射（写死：不可用不显示）
+# 你最后模板口径：退货仓先不计算 => 不加入 allow
+# ==========================================
 CHANNEL_WAREHOUSE_ALLOW = {
     "GOFO-报价": ["91730", "91752", "60632"],
     "GOFO-MT-报价": ["91730", "91752", "60632"],
     "UNIUNI-MT-报价": ["91730", "91752", "60632"],
     "USPS-YSD-报价": ["91730", "91752", "60632"],
     "FedEx-632-MT-报价": ["91730", "91752", "60632", "08691", "06801", "11791", "07032"],
+    "FedEx-MT-超大包裹-报价": ["91730", "91752", "60632", "08691", "06801", "11791", "07032"],
     "FedEx-ECO-MT报价": ["91730", "91752", "60632", "08691", "06801", "11791", "07032"],
+    "FedEx-MT-危险品-报价": ["60632", "08691", "06801", "11791", "07032"],
     "GOFO大件-GRO-报价": ["91730", "91752", "08691", "06801", "11791", "07032"],
-    "XLmiles-报价": ["91730"],  # 只有 91730
-    # 退货仓先不计算：63461 不加入 allow（你说先不算）
+    "GOFO大件-MT-报价": ["91730", "91752", "08691", "06801", "11791", "07032"],
+    "XLmiles-报价": ["91730"],
 }
 
 # ==========================================
-# 3) Excel 读取基础函数
+# 1.3 DAS PDF（你上传的文件名/路径）
+# ==========================================
+DAS_PDF_BASE = os.path.join(DATA_DIR, "FGE_DAS_Contiguous_Extended_Alaska_Hawaii_2025.pdf")
+DAS_PDF_CHANGES = os.path.join(DATA_DIR, "FGE_DAS_Zip_Code_Changes_2025.pdf")
+DAS_CHANGES_EFFECTIVE = "2025-06-02"
+
+# ==========================================
+# 1.4 FedEx 官网（可选保留：你之前要求构建时抓）
+# （你这轮重点是：不要破坏其它渠道；这个函数保留但不强依赖）
+# ==========================================
+def fetch_fedex_residential_peak_table():
+    url = "https://www.fedex.com/en-us/shipping/rate-changes/demand-surcharges.html"
+    fallback = {
+        "type": "fixed_by_date",
+        "source": "fallback",
+        "updated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "periods": []
+    }
+    try:
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        html = urlopen(req, timeout=15).read().decode("utf-8", errors="ignore")
+        if "FedEx Ground residential shipments" not in html:
+            return fallback
+        idx = html.find("FedEx Ground residential shipments")
+        snippet = html[idx: idx + 6000]
+        amts = re.findall(r"\$([0-9]+\.[0-9]{2})", snippet)
+        small = []
+        for a in amts:
+            v = float(a)
+            if v < 5:
+                small.append(v)
+            if len(small) >= 3:
+                break
+        return {
+            "type": "fixed_by_date",
+            "source": url,
+            "updated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "periods": [
+                {"start": "2025-10-27", "end": "2025-11-23", "amount": float(small[0]) if len(small) > 0 else 0},
+                {"start": "2025-11-24", "end": "2025-12-28", "amount": float(small[1]) if len(small) > 1 else 0},
+                {"start": "2025-12-29", "end": "2026-01-18", "amount": float(small[2]) if len(small) > 2 else 0}
+            ]
+        }
+    except:
+        return fallback
+
+# ==========================================
+# 2) PDF 解析：DAS zip list + changes
+# ==========================================
+def _pdf_extract_text(path):
+    if not PdfReader:
+        return ""
+    if not os.path.exists(path):
+        return ""
+    try:
+        reader = PdfReader(path)
+        chunks = []
+        for p in reader.pages:
+            try:
+                chunks.append(p.extract_text() or "")
+            except:
+                pass
+        return "\n".join(chunks)
+    except:
+        return ""
+
+def _split_pages_text(path):
+    if not PdfReader or not os.path.exists(path):
+        return []
+    out = []
+    try:
+        reader = PdfReader(path)
+        for p in reader.pages:
+            try:
+                out.append(p.extract_text() or "")
+            except:
+                out.append("")
+    except:
+        pass
+    return out
+
+def load_das_zip_sets():
+    """
+    输出结构：
+    {
+      "effective_change_date": "2025-06-02",
+      "source": {"base_pdf": "...", "changes_pdf": "..."},
+      "zips": {"contiguous": [...], "extended": [...], "alaska_hawaii": [...]}
+    }
+
+    说明：
+    - 基础 PDF：按页关键词粗分类（contiguous/extended/alaska/hawaii）
+    - changes PDF：同样粗分类，提取 zip，按“ADD/REMOVE/NEW/DELETE”等词做增删（解析不到则仅合并为新增）
+    """
+    z = {"contiguous": set(), "extended": set(), "alaska_hawaii": set()}
+    pages = _split_pages_text(DAS_PDF_BASE)
+
+    def bucket_for_page(txt):
+        u = (txt or "").upper()
+        if "ALASKA" in u or "HAWAII" in u:
+            return "alaska_hawaii"
+        if "EXTENDED" in u:
+            return "extended"
+        return "contiguous"
+
+    for txt in pages:
+        b = bucket_for_page(txt)
+        for m in re.findall(r"\b\d{5}\b", txt or ""):
+            z[b].add(m)
+
+    # changes：尝试增删
+    pages2 = _split_pages_text(DAS_PDF_CHANGES)
+    for txt in pages2:
+        b = bucket_for_page(txt)
+        u = (txt or "").upper()
+        zips = set(re.findall(r"\b\d{5}\b", txt or ""))
+        if not zips:
+            continue
+
+        # 极简增删判定：如果页面包含 REMOVE/DELETE 则当作移除，否则当作新增
+        if "REMOVE" in u or "DELETE" in u:
+            z[b] -= zips
+        else:
+            z[b] |= zips
+
+    return {
+        "effective_change_date": DAS_CHANGES_EFFECTIVE,
+        "source": {"base_pdf": os.path.basename(DAS_PDF_BASE), "changes_pdf": os.path.basename(DAS_PDF_CHANGES)},
+        "zips": {k: sorted(list(v)) for k, v in z.items()},
+        "updated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "note": "分类为按页关键词粗分类；若你的PDF排版跨页混合，可能需按你指定页码范围精确分类。"
+    }
+
+# ==========================================
+# 3) Excel 解析
 # ==========================================
 def safe_float(val):
     try:
         if pd.isna(val) or val == "" or str(val).strip().lower() == "nan":
             return 0.0
-        return float(str(val).replace('$','').replace(',','').strip())
+        return float(str(val).replace('$', '').replace(',', '').strip())
     except:
         return 0.0
 
-def open_sheet(path, sheet_name):
-    xl = pd.ExcelFile(path, engine='openpyxl')
-    if sheet_name not in xl.sheet_names:
-        return None
-    return pd.read_excel(xl, sheet_name=sheet_name, header=None)
+def get_sheet_by_name(excel_file, target_keys):
+    try:
+        xl = pd.ExcelFile(excel_file, engine='openpyxl')
+        for sheet in xl.sheet_names:
+            s_name = sheet.upper().replace(" ", "")
+            if all(k.upper().replace(" ", "") in s_name for k in target_keys):
+                print(f"    > 匹配Sheet: {sheet}")
+                return pd.read_excel(xl, sheet_name=sheet, header=None), sheet
+        return None, None
+    except Exception as e:
+        print(f"    > 读取失败: {e}")
+        return None, None
 
-def get_sheet_by_keyword(path, keyword_list):
-    xl = pd.ExcelFile(path, engine='openpyxl')
-    for s in xl.sheet_names:
-        sn = s.upper().replace(" ", "")
-        if all(k.upper().replace(" ", "") in sn for k in keyword_list):
-            return pd.read_excel(xl, sheet_name=s, header=None), s
-    return None, None
-
-# ==========================================
-# 4) 邮编库（GOFO 独立邮编区）
-# ==========================================
 def load_zip_db():
     print("--- 1. 加载邮编库（GOFO独立邮编区） ---")
-    path = os.path.join(DATA_DIR, TIER_FILES["T0"])
+    path = os.path.join(DATA_DIR, TIER_FILES['T0'])
     if not os.path.exists(path):
         return {}
 
-    df, real_sheet = get_sheet_by_keyword(path, ["GOFO", "报价"])
+    df, _sh = get_sheet_by_name(path, ["GOFO", "报价"])
     if df is None:
         return {}
 
-    print(f"    > 匹配Sheet: {real_sheet}")
     db = {}
     try:
         start = 0
         for i in range(100):
-            cell = str(df.iloc[i,1]).strip()
+            cell = str(df.iloc[i, 1]).strip()
             if cell.isdigit() and len(cell) == 5:
                 start = i
                 break
-
         df = df.fillna("")
         for _, row in df.iloc[start:].iterrows():
             z = str(row[1]).strip().zfill(5)
             if z.isdigit() and len(z) == 5:
                 zones = {}
-                for k, col in ZIP_COL_MAP.items():
-                    v = str(row[col]).strip()
-                    zones[k] = None if v in ["-", "nan", "", "0", "0.0"] else v
-                st = str(row[3]).strip().upper()
+                for k, v in ZIP_COL_MAP.items():
+                    val = str(row[v]).strip()
+                    if val in ['-', 'nan', '', '0', 0]:
+                        zones[k] = None
+                    else:
+                        zones[k] = val
+                sb = str(row[3]).strip().upper()
                 db[z] = {
-                    "s": st,
-                    "sn": US_STATES_CN.get(st, ""),
+                    "s": sb,
+                    "sn": US_STATES_CN.get(sb, ''),
                     "c": str(row[4]).strip(),
                     "r": str(row[2]).strip(),
                     "z": zones
                 }
     except:
         pass
-
     print(f"✅ 邮编库: {len(db)} 条")
     return db
 
-# ==========================================
-# 5) 固定坐标解析：解决你现在 GOFO / GOFO-MT / UNIUNI-MT 不出报价
-# ==========================================
-def col_letter_to_idx(letter):
-    return ord(letter.upper()) - ord('A')
+def to_lb(val):
+    s = str(val).upper().strip()
+    if pd.isna(val) or s == 'NAN' or s == '':
+        return None
+    nums = re.findall(r"[\d\.]+", s)
+    if not nums:
+        return None
+    n = float(nums[0])
+    if 'OZ' in s:
+        return n / 16.0
+    if 'KG' in s:
+        return n / 0.453592
+    return n
 
-def parse_fixed_table(df, header_row_1based, zone_start_col_letter, weight_rules):
+def extract_das_amount_block(df):
     """
-    df: 0-based
-    header_row_1based: 例如 3 表示 Excel 第3行（Zone~1 在这一行）
-    zone_start_col_letter: 例如 'C'
-    weight_rules: list of tuples: (col_letter, unit, start_row_1based)
-        例：GOFO-报价：OZ 在 A4-A19；LB 从 A20 往下；KG 从 B4 往下
-        => [('A','oz',4), ('A','lb',20), ('B','kg',4)]
-    逻辑：逐行扫描，从最“靠后的单位规则”优先生效（例如同列 A 既有 oz 又有 lb，则 >=20 用 lb）
+    你要求：DAS 金额从 Excel 181~186 自动抽取，金额列在 G181~G186
+    - 同一 sheet、同一位置
+    - 我这里同时把“标签列”从 F181~F186 取出来，便于前端按标签匹配 contiguous/extended/AK/HI 等
+    返回：[{label:..., amount:...}, ...]
     """
     if df is None or df.empty:
-        return [], []
-
-    df = df.fillna("")
-    hr = header_row_1based - 1
-    z0 = col_letter_to_idx(zone_start_col_letter)
-
-    # 解析 zones：从 zone_start 往右读到空为止
-    zones = []
-    for c in range(z0, df.shape[1]):
-        v = str(df.iloc[hr, c]).strip()
-        if not v:
-            break
-        m = re.search(r'(\d+)', v)
-        if m:
-            zones.append((m.group(1), c))
-        else:
-            # 不是 zone 列就跳过
-            continue
-
-    # 没读到 zone 列直接返回空
-    if not zones:
-        return [], []
-
-    # weight_rules 预处理：按 start_row 降序，让“更靠后的规则”覆盖更早的
-    rules = []
-    for col, unit, sr in weight_rules:
-        rules.append((col_letter_to_idx(col), unit.lower(), sr - 1))
-    rules.sort(key=lambda x: x[2], reverse=True)
-
-    prices = []
-    # 数据区：从 header_row+1 开始扫
-    for r in range(hr + 1, df.shape[0]):
-        w_lb = None
-
-        # 按规则挑 weight
-        for c_idx, unit, sr0 in rules:
-            if r < sr0:
-                continue
-            cell = str(df.iloc[r, c_idx]).strip()
-            if cell == "":
-                continue
-            # 允许纯数字/带单位
-            nums = re.findall(r"[\d\.]+", cell)
-            if not nums:
-                continue
-            n = float(nums[0])
-            if unit == "oz":
-                w_lb = n / 16.0
-            elif unit == "kg":
-                w_lb = n / 0.453592
-            else:  # lb
-                w_lb = n
-            break
-
-        if w_lb is None:
-            continue
-
-        item = {"w": float(w_lb)}
-        for zname, c in zones:
-            p = safe_float(df.iloc[r, c])
-            if p > 0:
-                item[zname] = p
-
-        if len(item) > 1:
-            prices.append(item)
-
-    prices.sort(key=lambda x: x["w"])
-    return [z for z, _ in zones], prices
+        return []
+    out = []
+    try:
+        # 0-based：row 181 => idx 180；col G => idx 6；col F => idx 5
+        for r in range(180, 186):
+            label = str(df.iloc[r, 5]).strip()
+            amt = safe_float(df.iloc[r, 6])
+            if label or amt:
+                out.append({"label": label, "amount": amt})
+    except:
+        return []
+    return out
 
 def load_tiers():
-    print("\n--- 2. 加载报价表（按你模板坐标优先） ---")
+    print("\n--- 2. 加载报价表 (中文兼容版) ---")
     all_tiers = {}
+    das_amounts = {}  # {tier: {channel: [..]}} 只存需要的渠道，避免污染其它逻辑
 
     for t_name, f_name in TIER_FILES.items():
         print(f"处理 {t_name}...")
@@ -257,419 +350,893 @@ def load_tiers():
             continue
 
         t_data = {}
+        das_amounts[t_name] = {}
 
-        # 2.1 GOFO-报价（固定坐标）
-        df_gofo, sh = get_sheet_by_keyword(path, ["GOFO", "报价"])
-        if df_gofo is not None:
-            zones, prices = parse_fixed_table(
-                df_gofo,
-                header_row_1based=3,
-                zone_start_col_letter="C",
-                weight_rules=[("A", "oz", 4), ("A", "lb", 20), ("B", "kg", 4)]
-            )
-            t_data["GOFO-报价"] = {"prices": prices}
-            print(f"    > GOFO-报价(sheet={sh}): zones={zones}, prices={len(prices)}")
+        for ch_key, keywords in CHANNEL_KEYWORDS.items():
+            df, sheet_name = get_sheet_by_name(path, keywords)
+            if df is None:
+                continue
 
-        # 2.2 GOFO、UNIUNI-MT-报价（一个 sheet 两块表）
-        df_mt, sh_mt = get_sheet_by_keyword(path, ["GOFO", "UNIUNI", "MT"])
-        if df_mt is not None:
-            # GOFO-MT 块：Zone~1 在 C3；重量规则同 GOFO
-            zones1, prices1 = parse_fixed_table(
-                df_mt,
-                header_row_1based=3,
-                zone_start_col_letter="C",
-                weight_rules=[("A", "oz", 3), ("A", "lb", 20), ("B", "kg", 4)]
-            )
-            t_data["GOFO-MT-报价"] = {"prices": prices1}
-            print(f"    > GOFO-MT-报价(sheet={sh_mt}): zones={zones1}, prices={len(prices1)}")
+            # === 只对需要 DAS 的渠道抽取 181~186（最小侵入）===
+            if ch_key in ["FedEx-632-MT-报价", "FedEx-ECO-MT报价", "GOFO大件-GRO-报价"]:
+                blk = extract_das_amount_block(df)
+                das_amounts[t_name][ch_key] = blk
 
-            # UNIUNI-MT 块：Zone~1 在 N3；重量 OZ=L3-L19；LB=L20；KG=M4
-            zones2, prices2 = parse_fixed_table(
-                df_mt,
-                header_row_1based=3,
-                zone_start_col_letter="N",
-                weight_rules=[("L", "oz", 3), ("L", "lb", 20), ("M", "kg", 4)]
-            )
-            t_data["UNIUNI-MT-报价"] = {"prices": prices2}
-            print(f"    > UNIUNI-MT-报价(sheet={sh_mt}): zones={zones2}, prices={len(prices2)}")
+            try:
+                h_row = 0
+                for i in range(60):
+                    row_str = " ".join(df.iloc[i].astype(str).values).lower()
+                    has_zone = ("zone" in row_str or "分区" in row_str)
+                    has_weight = ("weight" in row_str or "lb" in row_str or "重量" in row_str or "lbs" in row_str)
+                    if has_zone and has_weight:
+                        h_row = i
+                        break
 
-        # 2.3 USPS-YSD-报价（固定坐标：Zone~1-9 D4-L4；LB=B4；KG=C4）
-        df_usps, sh_usps = get_sheet_by_keyword(path, ["USPS", "YSD"])
-        if df_usps is not None:
-            zones, prices = parse_fixed_table(
-                df_usps,
-                header_row_1based=4,
-                zone_start_col_letter="D",
-                weight_rules=[("B", "lb", 4), ("C", "kg", 4)]
-            )
-            t_data["USPS-YSD-报价"] = {"prices": prices}
-            print(f"    > USPS-YSD-报价(sheet={sh_usps}): zones={zones}, prices={len(prices)}")
+                headers = df.iloc[h_row].astype(str).str.lower().tolist()
+                w_idx = -1
+                z_map = {}
 
-        # 2.4 其它渠道：先按“猜表头”保留原逻辑（不影响本次你要先修的 3 个渠道）
-        #     你后续要拆 FedEx-MT 超大包裹/危险品/大件等，再补固定坐标即可。
+                for i, v in enumerate(headers):
+                    if ('weight' in v or 'lb' in v or 'lbs' in v or '重量' in v) and w_idx == -1:
+                        w_idx = i
+
+                    m = re.search(r'(?:zone|分区)\s*~?\s*(\d+)', v)
+                    if m:
+                        zn = m.group(1)
+                        if zn not in z_map:
+                            z_map[zn] = i
+
+                if w_idx == -1:
+                    continue
+
+                prices = []
+                for i in range(h_row + 1, len(df)):
+                    row = df.iloc[i]
+                    lb = to_lb(row[w_idx])
+                    if lb is None:
+                        continue
+                    item = {'w': lb}
+                    for z, col in z_map.items():
+                        clean_p = safe_float(row[col])
+                        if clean_p > 0:
+                            item[z] = clean_p
+                    if len(item) > 1:
+                        prices.append(item)
+
+                prices.sort(key=lambda x: x['w'])
+                t_data[ch_key] = {"prices": prices}
+
+                # === 你之前要的排查日志保留 ===
+                print(f"    > {t_name}/{ch_key}: zones={list(z_map.keys())}, prices={len(prices)}")
+
+            except:
+                pass
+
         all_tiers[t_name] = t_data
 
-    return all_tiers
+    return all_tiers, das_amounts
 
 # ==========================================
-# 6) HTML_TEMPLATE（保持你已有 UI：合规检查 + 仓库过滤 + 报价结果）
-#     这里只做“必须用到的数据字段”对齐：warehouses + channel_wh_allow + tiers + zip_db
+# 4) 网页模板（在你原模板上补丁：仓库多选 + 只显示可用渠道 + DAS + 燃油折扣 + 住宅/签名 + XLmiles多件）
 # ==========================================
 HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>业务员报价助手</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <style>
-    body{background:#f4f6f9; font-family:'Segoe UI','Microsoft YaHei',sans-serif;}
-    header{background:#000;color:#fff;padding:12px 0;}
-    .card{border:none;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.05)}
-    .card-header{background:#212529;color:#fff;font-weight:700;border-radius:10px 10px 0 0}
-    .indicator{display:inline-block;padding:2px 8px;border-radius:4px;color:#fff;font-weight:700;font-size:12px}
-    .bg-ok{background:#198754}.bg-err{background:#dc3545}
-    .result-table th{background:#212529;color:#fff;vertical-align:middle;text-align:center}
-    .result-table td{vertical-align:middle;text-align:center}
-    .price-text{font-weight:800;font-size:18px;color:#0d6efd}
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>业务员报价助手 (Ultimate)</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        :root { --header-bg: #000; }
+        body { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; background-color: #f4f6f9; min-height: 100vh; display: flex; flex-direction: column; }
+        header { background-color: var(--header-bg); color: #fff; padding: 15px 0; border-bottom: 3px solid #333; }
+        footer { background-color: var(--header-bg); color: #aaa; padding: 20px 0; margin-top: auto; text-align: center; font-size: 0.85rem; }
+        .card { border: none; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        .card-header { background-color: #212529; color: #fff; font-weight: 600; padding: 10px 20px; border-radius: 8px 8px 0 0 !important; }
+        .form-label { font-weight: 600; font-size: 0.85rem; color: #555; margin-bottom: 4px; }
+        .input-group-text { font-size: 0.85rem; font-weight: 600; background-color: #e9ecef; }
+        .status-table { width: 100%; font-size: 0.85rem; }
+        .status-table td { padding: 6px; border-bottom: 1px solid #eee; vertical-align: middle; }
+        .indicator { display: inline-block; padding: 2px 8px; border-radius: 4px; color: #fff; font-weight: bold; font-size: 0.75rem; }
+        .bg-ok { background-color: #198754; } .bg-err { background-color: #dc3545; }
+        .result-table th { background-color: #212529; color: #fff; text-align: center; font-size: 0.85rem; vertical-align: middle; }
+        .result-table td { text-align: center; vertical-align: middle; font-size: 0.9rem; }
+        .price-text { font-weight: 800; font-size: 1.1rem; color: #0d6efd; }
+        .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;}
+    </style>
 </head>
 <body>
 
 <header>
-  <div class="container d-flex justify-content-between align-items-center">
-    <div>
-      <div class="fw-bold">📦 业务员报价助手</div>
-      <div class="small opacity-75">T0-T3 报价表解析版</div>
+    <div class="container d-flex justify-content-between align-items-center">
+        <div><h5 class="m-0 fw-bold">📦 业务员报价助手</h5><small class="opacity-75">T0-T3 专家版</small></div>
+        <div class="text-end text-white small">Multi-Channel Quote</div>
     </div>
-    <div class="small">Quote Tool</div>
-  </div>
 </header>
 
 <div class="container my-4">
-  <div class="row g-4">
-    <div class="col-lg-4">
-      <div class="card">
-        <div class="card-header">基础信息</div>
-        <div class="card-body">
+    <div class="row g-4">
+        <div class="col-lg-4">
+            <div class="card h-100">
+                <div class="card-header">1. 基础信息录入</div>
+                <div class="card-body">
+                    <form id="calcForm">
 
-          <div class="mb-3">
-            <label class="form-label fw-bold">发货仓库（仅用于可用渠道过滤）</label>
-            <select class="form-select" id="warehouse"></select>
-            <div class="small text-muted mt-1">你选择仓库后，只显示该仓可用渠道。</div>
-          </div>
+                        <div class="mb-3">
+                            <label class="form-label">发货仓库（只影响：可用渠道显示 + FedEx Zone）</label>
+                            <select class="form-select" id="warehouse"></select>
+                            <div class="small text-muted mt-1">不可用渠道：不显示，不输出“-”。</div>
+                        </div>
 
-          <div class="mb-3">
-            <label class="form-label fw-bold">客户等级</label>
-            <div class="btn-group w-100" role="group">
-              <input type="radio" class="btn-check" name="tier" id="t0" value="T0"><label class="btn btn-outline-secondary" for="t0">T0</label>
-              <input type="radio" class="btn-check" name="tier" id="t1" value="T1"><label class="btn btn-outline-secondary" for="t1">T1</label>
-              <input type="radio" class="btn-check" name="tier" id="t2" value="T2"><label class="btn btn-outline-secondary" for="t2">T2</label>
-              <input type="radio" class="btn-check" name="tier" id="t3" value="T3" checked><label class="btn btn-outline-secondary" for="t3">T3</label>
+                        <div class="bg-light p-2 rounded border mb-3">
+                            <div class="fw-bold small mb-2 border-bottom">⛽ 燃油费率 (Fuel Surcharge)</div>
+                            <div class="small text-danger fw-bold mb-2">仅：FedEx-632-MT / FedEx-MT-超大包裹 / GOFO大件（其中：632/超大包裹燃油 85 折）</div>
+                            <div class="row g-2">
+                                <div class="col-6 border-end">
+                                    <label class="form-label small">FedEx 燃油 (%)</label>
+                                    <input type="number" class="form-control form-control-sm" id="fedexFuel" value="16.0">
+                                </div>
+                                <div class="col-6">
+                                    <label class="form-label small">GOFO大件 燃油 (%)</label>
+                                    <input type="number" class="form-control form-control-sm" id="gofoFuel" value="15.0">
+                                </div>
+                            </div>
+                            <div class="small text-muted mt-1">
+                                已含燃油：FedEx-ECO-MT、GOFO、GOFO-MT、UNIUNI-MT（不再额外加）。
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">客户等级 (切换自动计算)</label>
+                            <div class="btn-group w-100" role="group">
+                                <input type="radio" class="btn-check" name="tier" id="t0" value="T0"><label class="btn btn-outline-secondary" for="t0">T0</label>
+                                <input type="radio" class="btn-check" name="tier" id="t1" value="T1"><label class="btn btn-outline-secondary" for="t1">T1</label>
+                                <input type="radio" class="btn-check" name="tier" id="t2" value="T2"><label class="btn btn-outline-secondary" for="t2">T2</label>
+                                <input type="radio" class="btn-check" name="tier" id="t3" value="T3" checked><label class="btn btn-outline-secondary" for="t3">T3</label>
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">目的地邮编 (Zip)</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="zipCode" placeholder="5位邮编">
+                                <button class="btn btn-dark" type="button" id="btnLookup">查询</button>
+                            </div>
+                            <div id="locInfo" class="mt-1 small fw-bold text-muted ps-1">请输入邮编查询...</div>
+                            <div id="zoneInfo" class="mt-1 small text-muted ps-1"></div>
+                            <div id="dasInfo" class="mt-1 small text-muted ps-1"></div>
+                        </div>
+
+                        <div class="row g-2 mb-3">
+                            <div class="col-7">
+                                <label class="form-label">地址类型</label>
+                                <select class="form-select" id="addressType">
+                                    <option value="res">🏠 住宅 (Residential)</option>
+                                    <option value="com">🏢 商业 (Commercial)</option>
+                                </select>
+                            </div>
+                            <div class="col-5 pt-4">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="peakToggle">
+                                    <label class="form-check-label small fw-bold" for="peakToggle">旺季附加费</label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="mb-2">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="sigToggle">
+                                <label class="form-check-label fw-bold">签名签收 (Indirect/Direct Signature)</label>
+                            </div>
+                            <div class="small text-muted">仅：XLmiles / FedEx-632 / FedEx-MT-危险品 / FedEx-MT-超大包裹</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">XLmiles 一票件数（用于“一票多件”计费）</label>
+                            <input type="number" min="1" value="1" class="form-control" id="xlPieces">
+                            <div class="small text-muted mt-1">第1件取大值，第2件起取小值×0.5（仅影响 XLmiles）。</div>
+                        </div>
+
+                        <hr>
+
+                        <div class="mb-3">
+                            <label class="form-label">包裹规格</label>
+                            <div class="row g-2">
+                                <div class="col-4"><div class="input-group input-group-sm"><span class="input-group-text">长</span><input type="number" class="form-control" id="length"></div></div>
+                                <div class="col-4"><div class="input-group input-group-sm"><span class="input-group-text">宽</span><input type="number" class="form-control" id="width"></div></div>
+                                <div class="col-4"><div class="input-group input-group-sm"><span class="input-group-text">高</span><input type="number" class="form-control" id="height"></div></div>
+                                <div class="col-12"><select class="form-select form-select-sm" id="dimUnit"><option value="in">IN</option><option value="cm">CM</option><option value="mm">MM</option></select></div>
+                            </div>
+                            <div class="row g-2 mt-2">
+                                <div class="col-8"><div class="input-group input-group-sm"><span class="input-group-text">重量</span><input type="number" class="form-control" id="weight"></div></div>
+                                <div class="col-4"><select class="form-select form-select-sm" id="weightUnit"><option value="lb">LB</option><option value="oz">OZ</option><option value="kg">KG</option><option value="g">G</option></select></div>
+                            </div>
+                        </div>
+
+                        <div class="bg-light p-2 rounded border mb-3">
+                            <div class="fw-bold small mb-2 border-bottom">🚦 各渠道合规性一览</div>
+                            <table class="status-table" id="checkTable">
+                                <tr><td class="text-muted">等待输入尺寸...</td></tr>
+                            </table>
+                        </div>
+
+                        <button type="button" class="btn btn-primary w-100 fw-bold" id="btnCalc">开始计算 (Calculate)</button>
+                    </form>
+                </div>
             </div>
-          </div>
-
-          <div class="mb-3">
-            <label class="form-label fw-bold">目的地邮编</label>
-            <div class="input-group">
-              <input type="text" class="form-control" id="zipCode" placeholder="5位邮编">
-              <button class="btn btn-dark" id="btnLookup" type="button">查询</button>
-            </div>
-            <div id="locInfo" class="small text-muted mt-1">请输入邮编</div>
-          </div>
-
-          <hr>
-
-          <div class="mb-3">
-            <label class="form-label fw-bold">包裹规格</label>
-            <div class="row g-2">
-              <div class="col-4"><input class="form-control" id="length" type="number" placeholder="长 L"></div>
-              <div class="col-4"><input class="form-control" id="width" type="number" placeholder="宽 W"></div>
-              <div class="col-4"><input class="form-control" id="height" type="number" placeholder="高 H"></div>
-              <div class="col-12">
-                <select class="form-select" id="dimUnit">
-                  <option value="in">IN</option><option value="cm">CM</option><option value="mm">MM</option>
-                </select>
-              </div>
-              <div class="col-8"><input class="form-control" id="weight" type="number" placeholder="重量"></div>
-              <div class="col-4">
-                <select class="form-select" id="weightUnit">
-                  <option value="lb">LB</option><option value="oz">OZ</option><option value="kg">KG</option><option value="g">G</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          <div class="bg-light p-2 rounded border mb-3">
-            <div class="fw-bold small mb-2 border-bottom">🚦 各渠道合规性一览</div>
-            <table class="table table-sm mb-0" id="checkTable">
-              <tr><td class="text-muted">等待输入尺寸...</td></tr>
-            </table>
-          </div>
-
-          <button class="btn btn-primary w-100 fw-bold" id="btnCalc" type="button">开始计算</button>
-
         </div>
-      </div>
+
+        <div class="col-lg-8">
+            <div class="card h-100">
+                <div class="card-header d-flex justify-content-between">
+                    <span>📊 测算结果</span>
+                    <span id="tierBadge" class="badge bg-warning text-dark"></span>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-info py-2 small" id="pkgSummary">请在左侧输入数据...</div>
+
+                    <div class="table-responsive">
+                        <table class="table table-bordered table-hover result-table">
+                            <thead>
+                                <tr>
+                                    <th width="18%">渠道</th>
+                                    <th width="18%">仓库</th>
+                                    <th width="10%">分区</th>
+                                    <th width="10%">计费重<br>(LB)</th>
+                                    <th width="12%">基础运费</th>
+                                    <th width="20%">附加费明细</th>
+                                    <th width="12%">总费用</th>
+                                    <th width="10%">状态</th>
+                                </tr>
+                            </thead>
+                            <tbody id="resBody"></tbody>
+                        </table>
+                    </div>
+
+                    <div class="mt-2 text-muted small border-top pt-2">
+                        <strong>计费逻辑说明（按你口径固定）：</strong><br>
+                        1) <strong>燃油</strong>：仅 FedEx-632 / FedEx-MT-超大包裹 / GOFO大件 额外计算；其中 632/超大包裹燃油 85 折。<br>
+                        2) <strong>住宅费</strong>：FedEx-632($2.61) / FedEx-MT-超大包裹($2.61) / FedEx-MT-危险品($3.32) / GOFO大件-MT($2.93)。<br>
+                        3) <strong>签名费</strong>：XLmiles($10.20) / FedEx-632($4.37) / FedEx-MT-危险品($9.71) / FedEx-MT-超大包裹($4.37)。<br>
+                        4) <strong>DAS</strong>：命中 FedEx 2025 DAS zip list（含 2025-06-02 变动）则叠加；金额从各渠道 sheet 的 G181~G186 抽取。<br>
+                        5) <strong>USPS 旺季</strong>：你已取消旺季栏目，本工具不计算（保留开关仅用于未来恢复）。<br>
+                        6) <strong>XLmiles</strong>：一票多件：第1件取大值，第2件起取小值×0.5（仅对 XLmiles 生效）。<br>
+                    </div>
+
+                </div>
+            </div>
+        </div>
     </div>
-
-    <div class="col-lg-8">
-      <div class="card">
-        <div class="card-header d-flex justify-content-between">
-          <span>报价结果</span>
-          <span class="badge bg-warning text-dark" id="tierBadge"></span>
-        </div>
-        <div class="card-body">
-          <div class="alert alert-info py-2 small" id="pkgSummary">请先输入邮编和包裹信息</div>
-
-          <div class="table-responsive">
-            <table class="table table-bordered table-hover result-table">
-              <thead>
-                <tr>
-                  <th width="25%">渠道</th>
-                  <th width="20%">仓库</th>
-                  <th width="10%">Zone</th>
-                  <th width="15%">计费重(LB)</th>
-                  <th width="15%">基础运费</th>
-                  <th width="15%">总费用</th>
-                </tr>
-              </thead>
-              <tbody id="resBody"></tbody>
-            </table>
-          </div>
-
-          <div class="small text-muted mt-2">
-            说明：本页先保证 GOFO/GOFO-MT/UNIUNI/USPS 四个渠道“能正常出价”；其它 FedEx 拆表、DAS、燃油折扣等在下一轮按你表定位补齐。
-          </div>
-
-        </div>
-      </div>
-    </div>
-  </div>
 </div>
 
+<footer><div class="container"><p>&copy; 2026 速狗海外仓 | Update: <span id="updateDate"></span></p></div></footer>
+
 <script>
-  let DATA = {};
-  try { DATA = __JSON_DATA__; } catch(e) { alert("Data Init Failed"); }
+    let DATA = {};
+    try { DATA = __JSON_DATA__; } catch(e) { throw new Error("Data Init Failed"); }
+    document.getElementById('updateDate').innerText = new Date().toLocaleDateString();
 
-  // ---------- 仓库下拉 ----------
-  (function initWarehouse(){
-    const sel = document.getElementById("warehouse");
-    (DATA.warehouses || []).forEach(w=>{
-      const opt = document.createElement("option");
-      opt.value = w.code;
-      opt.textContent = `${w.label}（${w.code}）`;
-      sel.appendChild(opt);
+    // =============================
+    // 仓库下拉（显示仓名+编号）
+    // =============================
+    const WAREHOUSES = (DATA.warehouses || []);
+    const whSel = document.getElementById('warehouse');
+    WAREHOUSES.forEach(w=>{
+        const opt = document.createElement('option');
+        opt.value = w.code;
+        opt.textContent = `${w.label}（${w.code}）`;
+        whSel.appendChild(opt);
     });
-    if(sel.options.length>0) sel.value = (DATA.warehouses[0]||{}).code || "";
-  })();
+    if(whSel.options.length>0){
+        whSel.value = "91730" in (DATA.warehouse_map||{}) ? "91730" : whSel.options[0].value;
+    }
 
-  // ---------- 自动计算 ----------
-  document.querySelectorAll('input[name="tier"]').forEach(r=>{
-    r.addEventListener("change", ()=>document.getElementById("btnCalc").click());
-  });
-  document.getElementById("warehouse").addEventListener("change", ()=>document.getElementById("btnCalc").click());
+    // =============================
+    // 自动计算监听
+    // =============================
+    document.querySelectorAll('input[name="tier"]').forEach(r => r.addEventListener('change', () => document.getElementById('btnCalc').click()));
+    document.getElementById('warehouse').addEventListener('change', () => document.getElementById('btnCalc').click());
+    document.getElementById('addressType').addEventListener('change', () => document.getElementById('btnCalc').click());
+    document.getElementById('peakToggle').addEventListener('change', () => document.getElementById('btnCalc').click());
+    document.getElementById('sigToggle').addEventListener('change', () => document.getElementById('btnCalc').click());
+    document.getElementById('xlPieces').addEventListener('change', () => document.getElementById('btnCalc').click());
 
-  // ---------- 单位标准化 ----------
-  function standardize(l,w,h,du,wt,wu){
-    let L=parseFloat(l)||0, W=parseFloat(w)||0, H=parseFloat(h)||0, Weight=parseFloat(wt)||0;
-    if(du==='cm'){L/=2.54;W/=2.54;H/=2.54} else if(du==='mm'){L/=25.4;W/=25.4;H/=25.4}
-    if(wu==='kg')Weight/=0.453592; else if(wu==='oz')Weight/=16; else if(wu==='g')Weight/=453.592;
-    return {L,W,H,Wt:Weight};
-  }
-
-  // ---------- 合规检查（恢复你要的尺寸判断模块） ----------
-  function check(pkg){
-    let d=[pkg.L,pkg.W,pkg.H].sort((a,b)=>b-a);
-    let L=d[0], G=L+2*(d[1]+d[2]);
-    const row=(name,fail,tip)=>{
-      let cls=fail?'bg-err':'bg-ok';
-      let txt=fail?tip:'正常(OK)';
-      return `<tr><td>${name}</td><td class="text-end"><span class="indicator ${cls}"></span> ${txt}</td></tr>`;
+    // =============================
+    // 渠道可用仓库（写死）
+    // =============================
+    const CHANNEL_WAREHOUSE_ALLOW = DATA.channel_warehouse_allow || {};
+    const warehouseLabel = (code)=>{
+        const m = DATA.warehouse_map || {};
+        return m[code] ? m[code].label : code;
     };
-    let html='';
-    // UniUni（你原口径）
-    html += row('UNIUNI', (L>20 || (L+d[1]+d[2])>50 || pkg.Wt>20), '限制(L>20 / Wt>20)');
-    // USPS（你原口径）
-    html += row('USPS', (pkg.Wt>70 || L>30 || (L+(d[1]+d[2])*2)>130), '限制(>70lb / 130")');
-    // GOFO（大件只示意）
-    html += row('GOFO', (pkg.Wt>150), '超限(>150lb)');
-    document.getElementById("checkTable").innerHTML = html;
-  }
 
-  ['length','width','height','weight','dimUnit','weightUnit'].forEach(id=>{
-    document.getElementById(id).addEventListener("input", ()=>{
-      let p=standardize(
-        document.getElementById('length').value,
-        document.getElementById('width').value,
-        document.getElementById('height').value,
-        document.getElementById('dimUnit').value,
-        document.getElementById('weight').value,
-        document.getElementById('weightUnit').value
-      );
-      check(p);
-    });
-  });
+    // =============================
+    // FedEx Zone：按仓库 region + 目的邮编前三位
+    // 你之前是固定 WEST/CENTRAL/EAST 三选，这里扩展为“多仓库同区域复用同规则”
+    // =============================
+    function calculateZoneMath(destZip, whCode) {
+        if(!destZip || destZip.length < 3) return null;
+        let p = parseInt(destZip.substring(0,3), 10);
+        if(isNaN(p)) return null;
 
-  // ---------- 邮编查询（优先 zip_db） ----------
-  let CUR_ZONES = {};
-  async function lookupZip(zip){
-    CUR_ZONES = {};
-    const d=document.getElementById("locInfo");
+        // 偏远/海岛（与你原逻辑一致）
+        if ((p >= 967 && p <= 969) || (p >= 995 && p <= 999) || destZip.startsWith('00')) return 9;
 
-    if(DATA.zip_db && DATA.zip_db[zip]){
-      let i=DATA.zip_db[zip];
-      d.innerHTML = `✅ ${i.sn} ${i.s} - ${i.c} [${i.r}]`;
-      CUR_ZONES = i.z || {};
-      return;
-    }
-    d.innerHTML = `❌ 未在邮编库找到该邮编（无法给 GOFO/USPS 分区）`;
-  }
+        const whMap = DATA.warehouse_map || {};
+        const wh = whMap[whCode];
+        const region = wh ? wh.region : "WEST";
+        let originType = (region==="WEST") ? "917" : (region==="CENTRAL" ? "606" : "088");
 
-  document.getElementById("btnLookup").onclick = async ()=>{
-    const zip=document.getElementById("zipCode").value.trim();
-    if(zip.length!==5){ alert("请输入5位邮编"); return; }
-    await lookupZip(zip);
-    document.getElementById("btnCalc").click();
-  };
-
-  // ---------- 计费重除数（保留最基本，不改动其它渠道） ----------
-  function getDivisor(ch, vol){
-    let u=ch.toUpperCase();
-    if(u.includes('UNIUNI')) return 0;
-    if(u.includes('USPS')) return vol>1728?166:0;
-    return 0; // GOFO/GOFO-MT 按实重（先满足出价）
-  }
-
-  // ---------- 核心计算：修复你说的三个渠道出价失败 ----------
-  document.getElementById("btnCalc").onclick = async ()=>{
-    const zip=document.getElementById("zipCode").value.trim();
-    if(zip.length===5 && (!CUR_ZONES || Object.keys(CUR_ZONES).length===0)){
-      await lookupZip(zip);
+        if (originType === '917') {
+            if (p >= 900 && p <= 935) return 2;
+            if (p >= 936 && p <= 961) return 3;
+            if (p >= 890 && p <= 898) return 3;
+            if (p >= 970 && p <= 994) return 4;
+            if (p >= 840 && p <= 884) return 4;
+            if (p >= 500 && p <= 799) return 6;
+            if (p >= 0 && p <= 499) return 8;
+        } else if (originType === '606') {
+            if (p >= 600 && p <= 629) return 2;
+            if (p >= 460 && p <= 569) return 3;
+            if (p >= 400 && p <= 459) return 4;
+            if (p >= 700 && p <= 799) return 4;
+            if (p >= 200 && p <= 399) return 5;
+            if (p >= 800 && p <= 899) return 6;
+            if (p >= 0 && p <= 199) return 7;
+            if (p >= 900 && p <= 966) return 8;
+        } else { // 088
+            if (p >= 70 && p <= 89) return 2;
+            if (p >= 0 && p <= 69) return 3;
+            if (p >= 150 && p <= 199) return 3;
+            if (p >= 200 && p <= 299) return 4;
+            if (p >= 400 && p <= 599) return 5;
+            if (p >= 600 && p <= 799) return 7;
+            if (p >= 800 && p <= 966) return 8;
+        }
+        return 8;
     }
 
-    const tier=document.querySelector('input[name="tier"]:checked').value;
-    const wh=document.getElementById("warehouse").value;
-    const whLabel = (DATA.warehouse_map && DATA.warehouse_map[wh]) ? DATA.warehouse_map[wh] : wh;
+    function isFedexStandardChannel(ch){
+        const u = ch.toUpperCase();
+        return (u.includes("FEDEX-632") || u.includes("FEDEX-ECO-MT") || u.includes("FEDEX-MT-超大") || u.includes("FEDEX-MT-危险"));
+    }
 
-    document.getElementById("tierBadge").innerText=tier;
+    // =============================
+    // 单位换算
+    // =============================
+    function standardize(l, w, h, du, wt, wu) {
+        let L=parseFloat(l)||0, W=parseFloat(w)||0, H=parseFloat(h)||0, Weight=parseFloat(wt)||0;
+        if(du==='cm'){L/=2.54;W/=2.54;H/=2.54} else if(du==='mm'){L/=25.4;W/=25.4;H/=25.4}
+        if(wu==='kg')Weight/=0.453592; else if(wu==='oz')Weight/=16; else if(wu==='g')Weight/=453.592;
+        return {L,W,H,Wt:Weight};
+    }
 
-    const pkg=standardize(
-      document.getElementById('length').value,
-      document.getElementById('width').value,
-      document.getElementById('height').value,
-      document.getElementById('dimUnit').value,
-      document.getElementById('weight').value,
-      document.getElementById('weightUnit').value
-    );
-    let dims=[pkg.L,pkg.W,pkg.H].sort((a,b)=>b-a);
-    let G=dims[0]+2*(dims[1]+dims[2]);
-    document.getElementById("pkgSummary").innerHTML =
-      `<b>基准:</b> ${dims[0].toFixed(1)}"×${dims[1].toFixed(1)}"×${dims[2].toFixed(1)}" | 实重:${pkg.Wt.toFixed(2)}lb | 围长:${G.toFixed(1)}"`;
+    // =============================
+    // 合规性一览（保留你原思路）
+    // =============================
+    function check(pkg) {
+        let d=[pkg.L, pkg.W, pkg.H].sort((a,b)=>b-a);
+        let L=d[0], G=L+2*(d[1]+d[2]);
+        const row = (name, fail, tip) => {
+            let cls = fail ? 'bg-err' : 'bg-ok';
+            let txt = fail ? tip : '正常 (OK)';
+            return `<tr><td>${name}</td><td class="text-end"><span class="indicator ${cls}"></span>${txt}</td></tr>`;
+        };
+        let html='';
+        html += row('UNIUNI', (L>20 || (L+d[1]+d[2])>50 || pkg.Wt>20), '限制(L>20/Wt>20)');
+        html += row('USPS', (pkg.Wt>70 || L>30 || (L+(d[1]+d[2])*2)>130), '限制(>70lb/130")');
+        html += row('FedEx', (pkg.Wt>150 || L>108 || G>165), '不可发(>150lb)');
+        html += row('XLmiles', (pkg.Wt>200 || L>144 || G>225), '范围(<=200lb/144"/225")');
+        document.getElementById('checkTable').innerHTML = html;
+    }
 
-    const tbody=document.getElementById("resBody");
-    tbody.innerHTML="";
-
-    const tiers=DATA.tiers || {};
-    const tdata=tiers[tier] || {};
-    const allowMap=DATA.channel_wh_allow || {};
-
-    const channels = Object.keys(tdata);
-
-    channels.forEach(ch=>{
-      // 1) 仓库可用过滤（不可用直接不显示）
-      const allow = allowMap[ch] || [];
-      if(allow.length>0 && !allow.includes(wh)) return;
-
-      // 2) zone：GOFO/GOFO-MT/UNIUNI/USPS 都用 zip_db 的 CUR_ZONES
-      const zoneVal = (CUR_ZONES && CUR_ZONES[ch]) ? String(CUR_ZONES[ch]) : "-";
-
-      // 3) 计费重
-      let cWt=pkg.Wt;
-      const div=getDivisor(ch, pkg.L*pkg.W*pkg.H);
-      if(div>0){
-        const vWt=(pkg.L*pkg.W*pkg.H)/div;
-        cWt=Math.max(pkg.Wt, vWt);
-      }
-      if(cWt>1) cWt=Math.ceil(cWt);
-
-      // 4) 匹配价格
-      const prices = (tdata[ch] && tdata[ch].prices) ? tdata[ch].prices : [];
-      let base=0;
-
-      if(zoneVal==="-" || prices.length===0){
-        tbody.innerHTML += `
-          <tr class="table-light">
-            <td class="fw-bold text-start">${ch}</td>
-            <td class="text-start">${whLabel}</td>
-            <td>${zoneVal}</td>
-            <td>${cWt.toFixed(2)}</td>
-            <td>0.00</td>
-            <td class="text-muted">-</td>
-          </tr>`;
-        return;
-      }
-
-      // 关键：GOFO/GOFO-MT/UNIUNI 的 zone 结构是 1-8；USPS 是 1-9
-      let row=null;
-      for(let r of prices){
-        if(r.w >= cWt-0.001){ row=r; break; }
-      }
-      if(row && row[zoneVal] !== undefined){
-        base = parseFloat(row[zoneVal])||0;
-      }
-
-      tbody.innerHTML += `
-        <tr>
-          <td class="fw-bold text-start">${ch}</td>
-          <td class="text-start">${whLabel}</td>
-          <td>Zone ${zoneVal}</td>
-          <td>${cWt.toFixed(2)}</td>
-          <td>${base.toFixed(2)}</td>
-          <td class="price-text">${base>0?("$"+base.toFixed(2)):"-"}</td>
-        </tr>`;
+    ['length','width','height','weight','dimUnit','weightUnit'].forEach(id=>{
+        document.getElementById(id).addEventListener('input', ()=>{
+            let p = standardize(
+                document.getElementById('length').value, document.getElementById('width').value, document.getElementById('height').value,
+                document.getElementById('dimUnit').value, document.getElementById('weight').value, document.getElementById('weightUnit').value
+            );
+            check(p);
+        })
     });
 
-    // 如果全部没显示，给最明显的排查提示（不影响你其它逻辑）
-    if(tbody.children.length===0){
-      tbody.innerHTML = `<tr><td colspan="6" class="text-danger fw-bold">❌ 该仓库无可用渠道（或 allowlist 未配置）</td></tr>`;
+    // =============================
+    // 邮编查询：GOFO邮编库优先（决定 GOFO/USPS/UNIUNI 的 zone）
+    // =============================
+    let CUR_ZONES = {};
+    let LAST_LOC = null;
+
+    async function lookupZip(zip){
+        let d = document.getElementById('locInfo');
+        let zinfo = document.getElementById('zoneInfo');
+        let dasInfo = document.getElementById('dasInfo');
+        let wh = document.getElementById('warehouse').value;
+
+        CUR_ZONES = {};
+        LAST_LOC = null;
+
+        if(DATA.zip_db && DATA.zip_db[zip]){
+            let i = DATA.zip_db[zip];
+            d.innerHTML = `<span class='text-success'>✅ ${i.sn} ${i.s} - ${i.c} [${i.r}]</span>`;
+            CUR_ZONES = i.z || {};
+            LAST_LOC = {state:i.s, city:i.c};
+        }else{
+            d.innerHTML = `<span class='text-danger'>❌ GOFO邮编库无该邮编（GOFO/USPS/UNIUNI 无法分区）</span>`;
+        }
+
+        // FedEx zone
+        if(zip && zip.length>=3){
+            let z = calculateZoneMath(zip, wh);
+            zinfo.innerHTML = z ? `FedEx Zone(按仓库计算): <b>Zone ${z}</b>` : '';
+        }else{
+            zinfo.innerHTML = '';
+        }
+
+        // DAS 命中提示
+        const das = DATA.das || {};
+        const sets = (das.zips && das.zips) ? das.zips : {};
+        let hit = null;
+        if(sets.alaska_hawaii && sets.alaska_hawaii.indexOf(zip) >= 0) hit = "alaska_hawaii";
+        else if(sets.extended && sets.extended.indexOf(zip) >= 0) hit = "extended";
+        else if(sets.contiguous && sets.contiguous.indexOf(zip) >= 0) hit = "contiguous";
+        dasInfo.innerHTML = hit ? `<span class="text-danger fw-bold">DAS 命中：${hit}</span>` : `<span class="text-muted">DAS：未命中</span>`;
     }
-  };
+
+    document.getElementById('btnLookup').onclick = async () => {
+        let zip = document.getElementById('zipCode').value.trim();
+        if(zip.length!==5){ alert("请输入5位邮编"); return; }
+        await lookupZip(zip);
+    };
+
+    // =============================
+    // 费用口径（按你最后模板固定）
+    // =============================
+    function round2(x){ return Math.round((x+Number.EPSILON)*100)/100; }
+
+    function getResFee(ch){
+        // 住宅费：FedEx-632=2.61 / FedEx超大包裹=2.61 / FedEx危险品=3.32 / GOFO大件-MT=2.93
+        if(ch.includes("FedEx-632")) return 2.61;
+        if(ch.includes("FedEx-MT-超大包裹")) return 2.61;
+        if(ch.includes("FedEx-MT-危险品")) return 3.32;
+        if(ch.includes("GOFO大件-MT")) return 2.93;
+        return 0;
+    }
+    function getSigFee(ch){
+        if(ch.includes("XLmiles")) return 10.20;
+        if(ch.includes("FedEx-632")) return 4.37;
+        if(ch.includes("FedEx-MT-危险品")) return 9.71;
+        if(ch.includes("FedEx-MT-超大包裹")) return 4.37;
+        return 0;
+    }
+
+    // 燃油：仅 632/超大包裹/GOFO大件 额外加；其中 632/超大包裹 85 折
+    function hasFuel(ch){
+        if(ch.includes("FedEx-632")) return true;
+        if(ch.includes("FedEx-MT-超大包裹")) return true;
+        if(ch.includes("GOFO大件")) return true;
+        return false;
+    }
+    function fuelDiscount85(ch){
+        return (ch.includes("FedEx-632") || ch.includes("FedEx-MT-超大包裹"));
+    }
+    function fuelIncluded(ch){
+        // 已含燃油：FedEx-ECO-MT、GOFO、GOFO-MT、UNIUNI-MT
+        if(ch.includes("FedEx-ECO-MT")) return true;
+        if(ch === "GOFO-报价") return true;
+        if(ch === "GOFO-MT-报价") return true;
+        if(ch === "UNIUNI-MT-报价") return true;
+        return false;
+    }
+
+    // =============================
+    // DAS 金额匹配：从 DATA.das_amounts[tier][channel] 里按 label 关键字选
+    // contiguous/extended/alaska_hawaii
+    // =============================
+    function getDasHit(zip){
+        const das = DATA.das || {};
+        const sets = das.zips || {};
+        if(sets.alaska_hawaii && sets.alaska_hawaii.indexOf(zip) >= 0) return "alaska_hawaii";
+        if(sets.extended && sets.extended.indexOf(zip) >= 0) return "extended";
+        if(sets.contiguous && sets.contiguous.indexOf(zip) >= 0) return "contiguous";
+        return null;
+    }
+
+    function pickDasAmount(tier, ch, hit){
+        const all = (DATA.das_amounts && DATA.das_amounts[tier] && DATA.das_amounts[tier][ch]) ? DATA.das_amounts[tier][ch] : [];
+        if(!all || all.length===0 || !hit) return 0;
+
+        // label 模糊匹配：包含 EXTENDED/ALASKA/HAWAII，否则当 contiguous
+        const want = hit;
+        let best = 0;
+        for(const it of all){
+            const lab = (it.label || "").toUpperCase();
+            const amt = parseFloat(it.amount||0) || 0;
+            if(want==="alaska_hawaii"){
+                if(lab.includes("ALASKA") || lab.includes("HAWAII") || lab.includes("AK") || lab.includes("HI")) best = Math.max(best, amt);
+            }else if(want==="extended"){
+                if(lab.includes("EXTENDED")) best = Math.max(best, amt);
+            }else{
+                // contiguous：优先不带 extended/ak/hi 的
+                if(!(lab.includes("EXTENDED") || lab.includes("ALASKA") || lab.includes("HAWAII") || lab.includes("AK") || lab.includes("HI"))) best = Math.max(best, amt);
+            }
+        }
+        // 如果 label 解析不到，退化为取最大值（防止你表头写法不同导致取不到）
+        if(best<=0){
+            for(const it of all){
+                best = Math.max(best, parseFloat(it.amount||0)||0);
+            }
+        }
+        return best;
+    }
+
+    // =============================
+    // XLmiles：按你规则（修正“多件才用分摊公式”）
+    // - 单件：按 AH/OS/OM 中满足条件的“单件价格”
+    // - 多件：第1件取大值，第2件起取小值×0.5（适用于所有服务）
+    // - 你给的 AH/OS/OM 同时存在的公式：只在“多件且同时包含 AH/OS/OM”时用
+    // =============================
+    function xl_zone_group(z){
+        if(z===1 || z===2) return "1-2";
+        if(z===3) return "3";
+        // 你模板表里还有 Zone6，但你口径里主要 1/2/3/6；这里保留显示但不扩算（没有给定 zone6 价格）
+        if(z===6) return "6";
+        return null;
+    }
+
+    function xl_single_prices(pkg, xg){
+        // 返回各服务单件价格（满足才给值）
+        let dims = [pkg.L, pkg.W, pkg.H].sort((a,b)=>b-a);
+        let L = dims[0];
+        let G = L + 2*(dims[1]+dims[2]);
+
+        const zone = xg; // "1-2" or "3" or "6"
+        // 你给定的价格只覆盖 Zone1-2/3；Zone6 未给价 => 不可用
+        if(zone==="6") return {ah:null, os:null, om:null};
+
+        let ah=null, os=null, om=null;
+
+        if(L<=96 && G<=130){
+            if(pkg.Wt<=90) ah = (zone==="1-2") ? 33 : 36;
+            else if(pkg.Wt<=150) ah = (zone==="1-2") ? 52 : 56;
+        }
+        if(L<=108 && G<=165 && pkg.Wt<=150){
+            os = (zone==="1-2") ? 65 : 69;
+        }
+        if(L<=144 && G<=225 && pkg.Wt<=200){
+            om = (zone==="1-2") ? 104 : 117;
+        }
+        return {ah, os, om};
+    }
+
+    function xl_price_multi_piece(pkg, xg, pieces){
+        const sp = xl_single_prices(pkg, xg);
+        const vals = [];
+        if(sp.ah!=null) vals.push({k:"AH", v:sp.ah});
+        if(sp.os!=null) vals.push({k:"OS", v:sp.os});
+        if(sp.om!=null) vals.push({k:"OM", v:sp.om});
+        if(vals.length===0) return {ok:false, base:0, details:["超规不可发"]};
+
+        // 单件：取“可用服务里最高价”作为该件收费（第1件取大值）
+        // 多件：第2件起取小值×0.5（你给的口径）
+        let details = [];
+        let base = 0;
+
+        // 关键：你提供的示例公式，只在“多件且同时包含 AH/OS/OM”时用
+        const hasAll = (sp.ah!=null && sp.os!=null && sp.om!=null);
+
+        if(pieces <= 1){
+            // 单件：取最大值
+            let maxv = Math.max(...vals.map(x=>x.v));
+            base = maxv;
+            details.push(`单件取大值=$${maxv.toFixed(2)}`);
+            return {ok:true, base, details};
+        }
+
+        if(hasAll){
+            // 多件且同时包含 AH/OS/OM：按你给的分摊公式
+            // AH*0.5 + OS*0.5 + OM(全额)
+            const ah = sp.ah, os = sp.os, om = sp.om;
+            base = ah*0.5 + os*0.5 + om;
+            details.push(`多件且AH/OS/OM齐全：AH*0.5($${(ah*0.5).toFixed(2)}) + OS*0.5($${(os*0.5).toFixed(2)}) + OM($${om.toFixed(2)})`);
+            // 其它件：按“第2件起半价”继续叠（你没给更细拆分，这里按“最小值×0.5”）
+            const minv = Math.min(ah, os, om);
+            for(let i=2; i<=pieces; i++){
+                base += minv*0.5;
+            }
+            if(pieces>1) details.push(`第2件起：取小值$${minv.toFixed(2)}×0.5，共${pieces-1}件`);
+            return {ok:true, base, details};
+        }
+
+        // 多件但不齐全：第1件取大值；第2件起取小值×0.5
+        const maxv = Math.max(...vals.map(x=>x.v));
+        const minv = Math.min(...vals.map(x=>x.v));
+        base += maxv;
+        details.push(`第1件取大值=$${maxv.toFixed(2)}`);
+        if(pieces>1){
+            base += (pieces-1) * (minv*0.5);
+            details.push(`第2件起取小值$${minv.toFixed(2)}×0.5，共${pieces-1}件`);
+        }
+        return {ok:true, base, details};
+    }
+
+    // =============================
+    // 计费重除数（保留你原函数）
+    // =============================
+    function getDivisor(ch, vol){
+        let u = ch.toUpperCase();
+        if(u.includes('UNIUNI')) return 0;
+        if(u.includes('USPS')) return vol > 1728 ? 166 : 0;
+        if(u.includes('ECO-MT')) return vol < 1728 ? 400 : 250;
+        return 222;
+    }
+
+    // =============================
+    // 计算按钮
+    // =============================
+    document.getElementById('btnCalc').onclick = async () => {
+        let zip = document.getElementById('zipCode').value.trim();
+        if(zip && zip.length===5 && (!LAST_LOC && (!CUR_ZONES || Object.keys(CUR_ZONES).length===0))){
+            await lookupZip(zip);
+        }
+
+        let tier = document.querySelector('input[name="tier"]:checked').value;
+        let whCode = document.getElementById('warehouse').value;
+        let whObj = (DATA.warehouse_map && DATA.warehouse_map[whCode]) ? DATA.warehouse_map[whCode] : {label:whCode, region:"WEST"};
+        let whLabel = `${whObj.label}（${whCode}）`;
+
+        let pkg = standardize(
+            document.getElementById('length').value, document.getElementById('width').value, document.getElementById('height').value,
+            document.getElementById('dimUnit').value, document.getElementById('weight').value, document.getElementById('weightUnit').value
+        );
+
+        let isPeak = document.getElementById('peakToggle').checked;
+        let isRes = document.getElementById('addressType').value === 'res';
+        let sigOn = document.getElementById('sigToggle').checked;
+
+        let xlPieces = parseInt(document.getElementById('xlPieces').value || "1", 10);
+        if(isNaN(xlPieces) || xlPieces < 1) xlPieces = 1;
+
+        let fedexFuel = parseFloat(document.getElementById('fedexFuel').value)/100;
+        let gofoFuel = parseFloat(document.getElementById('gofoFuel').value)/100;
+
+        document.getElementById('tierBadge').innerText = tier;
+
+        let dims = [pkg.L, pkg.W, pkg.H].sort((a,b)=>b-a);
+        let L=dims[0], G=L+2*(dims[1]+dims[2]);
+        document.getElementById('pkgSummary').innerHTML =
+            `<b>基准:</b> ${dims[0].toFixed(1)}"${dims[1].toFixed(1)}"${dims[2].toFixed(1)}" | 实重:${pkg.Wt.toFixed(2)}lb | 围长:${G.toFixed(1)}"`;
+
+        let tbody = document.getElementById('resBody');
+        tbody.innerHTML='';
+
+        if(!DATA.tiers || !DATA.tiers[tier]) {
+            tbody.innerHTML='<tr><td colspan="8" class="text-danger">❌ 等级数据缺失</td></tr>';
+            return;
+        }
+
+        // FedEx Zone
+        let fedexZone = (zip && zip.length>=3) ? calculateZoneMath(zip, whCode) : null;
+
+        // DAS hit
+        let dasHit = (zip && zip.length===5) ? getDasHit(zip) : null;
+
+        // 遍历该 tier 的渠道
+        Object.keys(DATA.tiers[tier]).forEach(ch => {
+            // 1) 过滤：仓库可用（不可用不显示）
+            let allow = CHANNEL_WAREHOUSE_ALLOW[ch] || [];
+            if(allow.length>0 && allow.indexOf(whCode) < 0) return;
+
+            let prices = (DATA.tiers[tier][ch] && DATA.tiers[tier][ch].prices) ? DATA.tiers[tier][ch].prices : [];
+            let zoneVal = "-";
+
+            // Zone：
+            if(isFedexStandardChannel(ch)){
+                zoneVal = fedexZone ? String(fedexZone) : "-";
+            }else{
+                zoneVal = (CUR_ZONES && CUR_ZONES[ch]) ? String(CUR_ZONES[ch]) : "-";
+            }
+
+            let base = 0;
+            let st = "正常";
+            let cls = "text-success";
+            let bg = "";
+            let details = [];
+
+            // 计费重
+            let cWt = pkg.Wt;
+            let div = getDivisor(ch, pkg.L*pkg.W*pkg.H);
+            if(div > 0) {
+                let vWt = (pkg.L*pkg.W*pkg.H)/div;
+                cWt = Math.max(pkg.Wt, vWt);
+            }
+            if(cWt>1) cWt = Math.ceil(cWt);
+
+            // ===== XLmiles：不走 Excel，走规则（按你最新口径修正）=====
+            if(ch.includes("XLmiles")){
+                if(!fedexZone){
+                    st="无分区";
+                    cls="text-muted";
+                    bg="table-light";
+                }else{
+                    let xg = xl_zone_group(fedexZone);
+                    if(!xg || xg==="6"){
+                        st="Zone不支持";
+                        cls="text-muted";
+                        bg="table-light";
+                    }else{
+                        zoneVal = "Z" + xg;
+                        let r = xl_price_multi_piece(pkg, xg, xlPieces);
+                        if(!r.ok){
+                            st="超规不可发";
+                            cls="text-danger fw-bold";
+                            bg="table-danger";
+                            base=0;
+                            details = r.details;
+                        }else{
+                            base = r.base;
+                            details = details.concat(r.details);
+                        }
+                    }
+                }
+
+                // XLmiles 签名费：开关控制
+                if(base>0 && sigOn){
+                    let sf = getSigFee(ch);
+                    if(sf>0){ details.push(`签名:$${sf.toFixed(2)}`); base += sf; }
+                }
+
+                let tot = base;
+                tbody.innerHTML += `<tr class="${bg}">
+                    <td class="fw-bold text-start text-nowrap">${ch}</td>
+                    <td class="text-nowrap">${whLabel}</td>
+                    <td>${zoneVal}</td>
+                    <td>${cWt.toFixed(2)}</td>
+                    <td class="fw-bold">${base>0?base.toFixed(2):"0.00"}</td>
+                    <td class="text-start small" style="line-height:1.2">${details.join('<br>')||'-'}</td>
+                    <td class="price-text">${tot>0?("$"+tot.toFixed(2)):'-'}</td>
+                    <td class="${cls} small fw-bold">${st}</td>
+                </tr>`;
+                return;
+            }
+
+            // ===== 其它渠道：走 Excel 报价表 =====
+            let row = null;
+            if(prices && prices.length>0 && zoneVal!=='-'){
+                for(let r of prices){
+                    if(r.w >= cWt-0.001) { row=r; break; }
+                }
+            }
+            if(!row || zoneVal==='-'){
+                st="无分区/超重";
+                cls="text-muted";
+                bg="table-light";
+                base=0;
+            }else{
+                base = row[zoneVal];
+                if(!base){
+                    st="无报价";
+                    cls="text-warning";
+                    bg="table-warning";
+                    base=0;
+                }
+            }
+
+            // 费用叠加
+            let fees = {fuel:0, res:0, peak:0, das:0, sig:0};
+
+            if(base > 0) {
+                // 住宅费
+                if(isRes){
+                    let rf = getResFee(ch);
+                    if(rf>0){
+                        fees.res = rf;
+                        details.push(`住宅:$${rf.toFixed(2)}`);
+                    }
+                }
+
+                // 旺季：你口径 USPS 已取消栏目 => 不算
+                // 这里保留开关但不对任何渠道加旺季（避免你说“乱加”）
+                if(isPeak){
+                    // do nothing
+                }
+
+                // 签名费
+                if(sigOn){
+                    let sf = getSigFee(ch);
+                    if(sf>0){
+                        fees.sig = sf;
+                        details.push(`签名:$${sf.toFixed(2)}`);
+                    }
+                }
+
+                // DAS：只对你点名的 3 个渠道叠加
+                if(dasHit && (ch.includes("FedEx-632") || ch.includes("FedEx-ECO-MT") || ch.includes("GOFO大件"))){
+                    let da = pickDasAmount(tier, ch, dasHit);
+                    if(da>0){
+                        fees.das = da;
+                        details.push(`DAS(${dasHit}):$${da.toFixed(2)}`);
+                    }
+                }
+
+                // 燃油
+                if(!fuelIncluded(ch) && hasFuel(ch)){
+                    if(ch.includes("GOFO大件")){
+                        let sub = base + fees.res + fees.sig + fees.das;
+                        fees.fuel = sub * gofoFuel;
+                        details.push(`燃油(${(gofoFuel*100).toFixed(1)}%):$${fees.fuel.toFixed(2)}`);
+                    }else{
+                        // FedEx：632/超大包裹 85折
+                        let f = base * fedexFuel;
+                        if(fuelDiscount85(ch)) f = f * 0.85;
+                        fees.fuel = f;
+                        details.push(`燃油(${(fedexFuel*100).toFixed(1)}%${fuelDiscount85(ch)?'×0.85':''}):$${fees.fuel.toFixed(2)}`);
+                    }
+                }
+            }
+
+            let tot = base + fees.fuel + fees.res + fees.peak + fees.das + fees.sig;
+            tbody.innerHTML += `<tr class="${bg}">
+                <td class="fw-bold text-start text-nowrap">${ch}</td>
+                <td class="text-nowrap">${whLabel}</td>
+                <td>${zoneVal==='-'?'-':('Zone '+zoneVal)}</td>
+                <td>${cWt.toFixed(2)}</td>
+                <td class="fw-bold">${base.toFixed(2)}</td>
+                <td class="text-start small" style="line-height:1.2">${details.join('<br>')||'-'}</td>
+                <td class="price-text">${tot>0?("$"+tot.toFixed(2)):'-'}</td>
+                <td class="${cls} small fw-bold">${st}</td>
+            </tr>`;
+        });
+    };
 </script>
-
 </body>
 </html>
 """
 
 # ==========================================
-# 7) 主入口：生成 public/index.html
+# 5) 生成 index.html（确保一定落盘）
 # ==========================================
-if __name__ == "__main__":
+if __name__ == '__main__':
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    zip_db = load_zip_db()
-    tiers = load_tiers()
+    # DAS zip set（PDF -> JSON）
+    das = load_das_zip_sets()
 
-    # warehouse_map 给前端显示
-    warehouse_map = {w["code"]: w["label"] for w in WAREHOUSES}
+    # zip db + tiers
+    zip_db = load_zip_db()
+    tiers, das_amounts = load_tiers()
+
+    # fedex peak（保留，不影响你核心报价）
+    fedex_res_peak = fetch_fedex_residential_peak_table()
 
     final = {
         "zip_db": zip_db,
         "tiers": tiers,
         "surcharges": GLOBAL_SURCHARGES,
+        "fedex_res_peak": fedex_res_peak,
+
+        # 仓库相关
         "warehouses": WAREHOUSES,
-        "warehouse_map": warehouse_map,
-        "channel_wh_allow": CHANNEL_WAREHOUSE_ALLOW,
+        "warehouse_map": {w["code"]: w for w in WAREHOUSES},
+        "channel_warehouse_allow": CHANNEL_WAREHOUSE_ALLOW,
+
+        # DAS：zip sets + 各tier各渠道金额块
+        "das": das,
+        "das_amounts": das_amounts,
+
         "meta": {"generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}
     }
 
     print("\n--- 3. 生成网页 ---")
     js_str = json.dumps(final, ensure_ascii=False)
-    html = HTML_TEMPLATE.replace("__JSON_DATA__", js_str)
+
+    html = HTML_TEMPLATE.replace('__JSON_DATA__', js_str)
 
     out_path = os.path.join(OUTPUT_DIR, "index.html")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
 
-    print(f"✅ 完成！已生成: {out_path}")
+    if os.path.exists(out_path):
+        print(f"✅ 完成！已生成：{out_path}")
+    else:
+        print("❌ 生成失败：public/index.html 不存在（请检查权限/路径）")
