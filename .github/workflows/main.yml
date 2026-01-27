@@ -6,8 +6,8 @@ on:
       - main
   workflow_dispatch:
   schedule:
-    # GitHub Actions 使用 UTC；下面是每天 09:00 UTC（纽约冬令时约 04:00）
-    - cron: "0 9 * * *"
+    # 每天跑一次（UTC 03:30；如需换到美东固定时间我再给你换 cron）
+    - cron: "30 3 * * *"
 
 permissions:
   contents: write
@@ -16,41 +16,29 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code (拉取代码)
+      - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Set up Python (设置Python环境)
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: "3.9"
 
-      - name: Install dependencies (安装依赖库)
+      - name: Install dependencies
         run: |
-          python -V
-          pip -V
+          python -m pip install --upgrade pip
           pip install pandas openpyxl
 
-      - name: Run Generator (执行生成脚本)
+      - name: Run Generator
         run: |
-          ls -al
           python generate.py
 
-      # ✅ 关键：不改你任何业务代码，只做“生成结果”硬校验 + 打印排查信息
-      - name: Verify index.html generated (硬校验输出)
+      - name: Verify output exists
         run: |
-          echo "---- LIST ROOT ----"
-          ls -al
-          echo "---- LIST PUBLIC ----"
-          ls -al public || true
-          echo "---- FIND index.html ----"
-          find . -maxdepth 3 -name "index.html" -print
-          echo "---- ASSERT public/index.html EXISTS ----"
+          ls -la public || true
           test -f public/index.html
-          echo "OK: public/index.html exists"
-          echo "---- HEAD of public/index.html ----"
-          head -n 5 public/index.html
 
-      - name: Deploy to GitHub Pages (发布到网页)
+      - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
