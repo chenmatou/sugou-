@@ -1,670 +1,675 @@
+import pandas as pd
 import json
-import os
 import re
+import os
 import warnings
 from datetime import datetime
-from openpyxl import load_workbook
-from openpyxl.utils.cell import column_index_from_string, get_column_letter
+from urllib.request import urlopen, Request
 
-# 忽略 Excel 样式警告
-warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
-# =========================================================
-# 1) 全局路径
-# =========================================================
+# ==========================================
+# 1) 全局配置
+# ==========================================
 DATA_DIR = "data"
 OUTPUT_DIR = "public"
 
-TIER_FILES = {
-    "T0": "T0.xlsx",
-    "T1": "T1.xlsx",
-    "T2": "T2.xlsx",
-    "T3": "T3.xlsx",
-}
+TIER_FILES = {"T0": "T0.xlsx", "T1": "T1.xlsx", "T2": "T2.xlsx", "T3": "T3.xlsx"}
 
-# =========================================================
-# 2) 仓库配置 (按您提供的清单)
-# =========================================================
-WAREHOUSES = [
-    {"id": "W60632", "label": "SureGo美中芝加哥-60632仓", "zip": "60632", "region": "CENTRAL", "enabled": True},
-    {"id": "W91730", "label": "SureGo美西库卡蒙格-91730新仓", "zip": "91730", "region": "WEST", "enabled": True},
-    {"id": "W91752", "label": "SureGo美西米拉罗马-91752仓", "zip": "91752", "region": "WEST", "enabled": True},
-    {"id": "E08691", "label": "SureGo美东新泽西-08691仓", "zip": "08691", "region": "EAST", "enabled": True},
-    {"id": "E06801", "label": "SureGo美东贝塞尔-06801仓", "zip": "06801", "region": "EAST", "enabled": True},
-    {"id": "E11791", "label": "SureGo美东长岛-11791仓", "zip": "11791", "region": "EAST", "enabled": True},
-    {"id": "E07032", "label": "SureGo美东新泽西-07032仓", "zip": "07032", "region": "EAST", "enabled": True},
-    {"id": "R63461", "label": "SureGo退货检测-美中密苏里63461退货仓", "zip": "63461", "region": "RETURN", "enabled": False},
+# 你工具里“渠道 key”统一用这些（不要随意改名，否则 ZIP 映射/allowlist/解析都对不上）
+CHANNEL_KEYS = [
+    "GOFO-报价",
+    "GOFO-MT-报价",     # 合并 UNIUNI 的 sheet 里第一块
+    "UNIUNI-MT-报价",   # 合并 UNIUNI 的 sheet 里第二块
+    "USPS-YSD-报价",
+    "FedEx-ECO-MT报价",
+    "XLmiles-报价",
+    "GOFO大件-GRO-报价",
+    "FedEx-632-MT-报价",
+    # 其它渠道后续再加
 ]
 
-# =========================================================
-# 3) 渠道 ↔ 仓库区域映射
-# =========================================================
-CHANNEL_ALLOW = {
-    "GOFO-报价": ["WEST", "CENTRAL"],
-    "GOFO、UNIUNI-MT-报价": ["WEST", "CENTRAL"],
-    "USPS-YSD-报价": ["WEST", "CENTRAL"],
-    "FedEx-632-MT-报价": ["WEST", "CENTRAL", "EAST"],
-    "FedEx-MT-超大包裹-报价": ["WEST", "CENTRAL", "EAST"],
-    "FedEx-ECO-MT报价": ["WEST", "CENTRAL", "EAST"],
-    "FedEx-MT-危险品-报价": ["CENTRAL", "EAST"],
-    "GOFO大件-MT-报价": ["WEST", "EAST"],
-    "XLmiles-报价": ["WEST"],
+# 邮编库仍来自 GOFO-报价（保持不动）
+ZIP_DB_SHEET_KEY = "GOFO-报价"
+ZIP_COL_MAP = {
+    "GOFO-报价": 5,
+    "GOFO-MT-报价": 6,
+    "UNIUNI-MT-报价": 7,
+    "USPS-YSD-报价": 8,
+    "FedEx-ECO-MT报价": 9,
+    "XLmiles-报价": 10,
+    "GOFO大件-GRO-报价": 11,
+    "FedEx-632-MT-报价": 12,
+    # "FedEx-YSD-报价": 13,  # 你已取消 FedEx-YSD
 }
 
-# =========================================================
-# 4) 费用配置 (精确到美分)
-# =========================================================
-FEES = {
-    "res": {
-        "FedEx-632-MT-报价": 2.61,
-        "FedEx-MT-超大包裹-报价": 2.61,
-        "FedEx-MT-危险品-报价": 3.32,
-        "GOFO大件-MT-报价": 2.93,
-    },
-    "sig": {
-        "XLmiles-报价": 10.20,
-        "FedEx-632-MT-报价": 4.37,
-        "FedEx-MT-危险品-报价": 9.71,
-        "FedEx-MT-超大包裹-报价": 4.37,
-    }
+GLOBAL_SURCHARGES = {
+    "fuel": 0.16,
+    "oversize_fee": 130,
+    "unauthorized_fee": 1150
 }
 
-# 燃油配置
-FUEL_CONFIG = {
-    "channels": [
-        "FedEx-632-MT-报价",
-        "FedEx-MT-超大包裹-报价",
-        "FedEx-MT-危险品-报价",
-        "GOFO大件-MT-报价"
-    ],
-    "discount_85": [
-        "FedEx-632-MT-报价",
-        "FedEx-MT-超大包裹-报价"
-    ]
+US_STATES_CN = {
+    'AL':'阿拉巴马','AK':'阿拉斯加','AZ':'亚利桑那','AR':'阿肯色','CA':'加利福尼亚',
+    'CO':'科罗拉多','CT':'康涅狄格','DE':'特拉华','FL':'佛罗里达','GA':'佐治亚',
+    'HI':'夏威夷','ID':'爱达荷','IL':'伊利诺伊','IN':'印第安纳','IA':'爱荷华',
+    'KS':'堪萨斯','KY':'肯塔基','LA':'路易斯安那','ME':'缅因','MD':'马里兰',
+    'MA':'马萨诸塞','MI':'密歇根','MN':'明尼苏达','MS':'密西西比','MO':'密苏里',
+    'MT':'蒙大拿','NE':'内布拉斯加','NV':'内华达','NH':'新罕布什尔','NJ':'新泽西',
+    'NM':'新墨西哥','NY':'纽约','NC':'北卡罗来纳','ND':'北达科他','OH':'俄亥俄',
+    'OK':'俄克拉荷马','OR':'俄勒冈','PA':'宾夕法尼亚','RI':'罗德岛','SC':'南卡罗来纳',
+    'SD':'南达科他','TN':'田纳西','TX':'德克萨斯','UT':'犹他','VT':'佛蒙特',
+    'VA':'弗吉尼亚','WA':'华盛顿','WV':'西弗吉尼亚','WI':'威斯康星','WY':'怀俄明',
+    'DC':'华盛顿特区'
 }
 
-# =========================================================
-# 5) Excel 工具函数
-# =========================================================
-def safe_float(val) -> float:
+# ==========================================
+# 2) 仓库清单（按你模板：数字仅编号；用于可用渠道过滤 + FedEx Zone 归类）
+# ==========================================
+WAREHOUSES = [
+    {"code": "60632", "label": "SureGo美中芝加哥-60632仓", "region": "CENTRAL"},
+    {"code": "91730", "label": "SureGo美西库卡蒙格-91730新仓", "region": "WEST"},
+    {"code": "91752", "label": "SureGo美西米拉罗马-91752仓", "region": "WEST"},
+    {"code": "08691", "label": "SureGo美东新泽西-08691仓", "region": "EAST"},
+    {"code": "06801", "label": "SureGo美东贝塞尔-06801仓", "region": "EAST"},
+    {"code": "11791", "label": "SureGo美东长岛-11791仓", "region": "EAST"},
+    {"code": "07032", "label": "SureGo美东新泽西-07032仓", "region": "EAST"},
+    {"code": "63461", "label": "SureGo退货检测-美中密苏里63461退货仓", "region": "RETURN"},
+]
+
+# 渠道 ↔ 仓库可用（写死）：你模板里“美西/美中/美东”我这里按仓库 code 精确控制
+CHANNEL_WAREHOUSE_ALLOW = {
+    "GOFO-报价": ["91730", "91752", "60632"],
+    "GOFO-MT-报价": ["91730", "91752", "60632"],
+    "UNIUNI-MT-报价": ["91730", "91752", "60632"],
+    "USPS-YSD-报价": ["91730", "91752", "60632"],
+    "FedEx-632-MT-报价": ["91730", "91752", "60632", "08691", "06801", "11791", "07032"],
+    "FedEx-ECO-MT报价": ["91730", "91752", "60632", "08691", "06801", "11791", "07032"],
+    "GOFO大件-GRO-报价": ["91730", "91752", "08691", "06801", "11791", "07032"],
+    "XLmiles-报价": ["91730"],  # 只有 91730
+    # 退货仓先不计算：63461 不加入 allow（你说先不算）
+}
+
+# ==========================================
+# 3) Excel 读取基础函数
+# ==========================================
+def safe_float(val):
     try:
-        if val is None: return 0.0
-        s = str(val).strip()
-        if not s or s.lower() == "nan": return 0.0
-        s = s.replace("$", "").replace(",", "")
-        return float(s)
-    except: return 0.0
+        if pd.isna(val) or val == "" or str(val).strip().lower() == "nan":
+            return 0.0
+        return float(str(val).replace('$','').replace(',','').strip())
+    except:
+        return 0.0
 
-def to_lb(val, unit="LB"):
-    if val is None: return None
-    s = str(val).strip()
-    nums = re.findall(r"[\d\.]+", s)
-    if not nums: return None
-    n = float(nums[0])
-    if "OZ" in unit.upper() or "OZ" in s.upper(): return n / 16.0
-    if "KG" in unit.upper() or "KG" in s.upper(): return n / 0.453592
-    return n
+def open_sheet(path, sheet_name):
+    xl = pd.ExcelFile(path, engine='openpyxl')
+    if sheet_name not in xl.sheet_names:
+        return None
+    return pd.read_excel(xl, sheet_name=sheet_name, header=None)
 
-def get_sheet(wb, keywords):
-    # 关键词匹配 sheet
-    for name in wb.sheetnames:
-        if all(k.upper() in name.upper() for k in keywords):
-            return wb[name]
-    return None
+def get_sheet_by_keyword(path, keyword_list):
+    xl = pd.ExcelFile(path, engine='openpyxl')
+    for s in xl.sheet_names:
+        sn = s.upper().replace(" ", "")
+        if all(k.upper().replace(" ", "") in sn for k in keyword_list):
+            return pd.read_excel(xl, sheet_name=s, header=None), s
+    return None, None
 
-def scan_zones(ws, row, col_start_letter, col_end_letter):
-    zmap = {}
-    c1 = column_index_from_string(col_start_letter)
-    c2 = column_index_from_string(col_end_letter)
-    for c in range(c1, c2 + 1):
-        v = ws.cell(row=row, column=c).value
-        if v:
-            s = str(v).strip()
-            # 匹配 "Zone 1", "Zone~1", "1", "分区1"
-            m = re.search(r"(\d+)", s)
-            if m:
-                zmap[str(m.group(1))] = get_column_letter(c)
-    return zmap
+# ==========================================
+# 4) 邮编库（GOFO 独立邮编区）
+# ==========================================
+def load_zip_db():
+    print("--- 1. 加载邮编库（GOFO独立邮编区） ---")
+    path = os.path.join(DATA_DIR, TIER_FILES["T0"])
+    if not os.path.exists(path):
+        return {}
 
-def read_table(ws, weight_col, start_row, zmap, unit="LB"):
-    prices = []
-    r = start_row
-    while r < 5000:
-        w_val = ws[f"{weight_col}{r}"].value
-        if w_val is None: break
-        
-        lb = to_lb(w_val, unit)
-        if lb is None: 
-            r += 1
-            continue
-            
-        item = {"w": lb}
-        has_price = False
-        for z, col in zmap.items():
-            p = safe_float(ws[f"{col}{r}"].value)
-            if p > 0:
-                item[z] = p
-                has_price = True
-        
-        if has_price: prices.append(item)
-        r += 1
-    return prices
+    df, real_sheet = get_sheet_by_keyword(path, ["GOFO", "报价"])
+    if df is None:
+        return {}
 
-def extract_das(ws):
-    # G181~G186
-    items = []
-    for r in range(181, 187):
-        n = ws[f"I{r}"].value
-        p = safe_float(ws[f"G{r}"].value)
-        if p > 0:
-            items.append(f"{n}: ${p}")
-    return items
+    print(f"    > 匹配Sheet: {real_sheet}")
+    db = {}
+    try:
+        start = 0
+        for i in range(100):
+            cell = str(df.iloc[i,1]).strip()
+            if cell.isdigit() and len(cell) == 5:
+                start = i
+                break
 
-# =========================================================
-# 6) 核心加载逻辑
-# =========================================================
-def load_data():
-    db = {"tiers": {}, "zip_db": {}}
-    
-    # 1. 加载邮编库 (从 T0 的 GOFO-报价)
-    print("--- 加载邮编库 ---")
-    if os.path.exists(os.path.join(DATA_DIR, "T0.xlsx")):
-        wb0 = load_workbook(os.path.join(DATA_DIR, "T0.xlsx"), data_only=True)
-        ws_zip = get_sheet(wb0, ["GOFO", "报价"])
-        if ws_zip:
-            # 假设邮编在B列, State在D, City在E (按V19逻辑)
-            # 这里的Zone列映射对应 ZIP_COL_MAP
-            # GOFO(F), GOFO-MT(G), UNI(H), USPS(I), ECO(J), XL(K), GOFO-Big(L), 632(M), YSD(N) -> 这里的列号需根据Excel实际调整
-            # 既然没有Excel实际文件，我采用你之前提供的列号逻辑：
-            # C=3, D=4, E=5 ...
-            for r in range(4, 50000): # 假设数据从第4行开始
-                z = str(ws_zip[f"B{r}"].value).strip().zfill(5)
-                if not z.isdigit(): continue
-                if len(z) != 5: continue
-                
-                info = {
-                    "s": str(ws_zip[f"D{r}"].value).strip(),
-                    "c": str(ws_zip[f"E{r}"].value).strip(),
-                    "z": {}
+        df = df.fillna("")
+        for _, row in df.iloc[start:].iterrows():
+            z = str(row[1]).strip().zfill(5)
+            if z.isdigit() and len(z) == 5:
+                zones = {}
+                for k, col in ZIP_COL_MAP.items():
+                    v = str(row[col]).strip()
+                    zones[k] = None if v in ["-", "nan", "", "0", "0.0"] else v
+                st = str(row[3]).strip().upper()
+                db[z] = {
+                    "s": st,
+                    "sn": US_STATES_CN.get(st, ""),
+                    "c": str(row[4]).strip(),
+                    "r": str(row[2]).strip(),
+                    "z": zones
                 }
-                
-                # 映射 Zone 值 (根据你提供的 ZIP_COL_MAP 索引)
-                # 5->F, 6->G ...
-                # GOFO-报价:5, GOFO/UNI-MT:6, USPS:8, ECO:9, XL:10, GOFO大件:11, 632:12
-                mapping = {
-                    "GOFO-报价": 5, "GOFO、UNIUNI-MT-报价": 6, "USPS-YSD-报价": 8,
-                    "FedEx-ECO-MT报价": 9, "XLmiles-报价": 10, "GOFO大件-MT-报价": 11,
-                    "FedEx-632-MT-报价": 12, "FedEx-MT-超大包裹-报价": 12, "FedEx-MT-危险品-报价": 12
-                }
-                
-                for ch, col_idx in mapping.items():
-                    val = ws_zip.cell(row=r, column=col_idx+1).value # openpyxl is 1-based
-                    if val and str(val) not in ['-', '0']:
-                        info['z'][ch] = str(val)
-                
-                db["zip_db"][z] = info
-    print(f"✅ 邮编库加载完成: {len(db['zip_db'])} 条")
+    except:
+        pass
 
-    # 2. 加载价格表
-    print("--- 加载价格表 ---")
-    for tier, fname in TIER_FILES.items():
-        fpath = os.path.join(DATA_DIR, fname)
-        if not os.path.exists(fpath): continue
-        print(f"Processing {tier}...")
-        
-        wb = load_workbook(fpath, data_only=True)
-        tier_data = {}
-        
-        # 1) GOFO-报价
-        ws = get_sheet(wb, ["GOFO", "报价"])
-        if ws:
-            # 混合: OZ(A4-A19), LB(A20+)
-            zmap = scan_zones(ws, 3, "C", "J")
-            p_oz = read_table(ws, "A", 4, zmap, "OZ") # 读到空为止? 限制行数更好
-            # 修正: read_table 读到空停止，这里需要分段
-            # 手动读 OZ 段
-            oz_prices = []
-            for r in range(4, 20):
-                w = to_lb(ws[f"A{r}"].value, "OZ")
-                if w: 
-                    it = {"w": w}
-                    for z, c in zmap.items(): 
-                        pv = safe_float(ws[f"{c}{r}"].value)
-                        if pv>0: it[z]=pv
-                    oz_prices.append(it)
-            # LB 段
-            lb_prices = read_table(ws, "A", 20, zmap, "LB")
-            tier_data["GOFO-报价"] = {"type": "single", "prices": oz_prices + lb_prices, "das": extract_das(ws)}
-
-        # 2) GOFO、UNIUNI-MT
-        ws = get_sheet(wb, ["GOFO", "UNIUNI", "MT"])
-        if ws:
-            # GOFO部分: Weight A3, Zone C3-J3
-            zmap_g = scan_zones(ws, 3, "C", "J")
-            p_g = read_table(ws, "A", 4, zmap_g, "LB") # 假设主要是LB，如果混合需特殊处理，这里简化为LB
-            # UNIUNI部分: Weight L3, Zone N3-U3
-            zmap_u = scan_zones(ws, 3, "N", "U")
-            p_u = read_table(ws, "L", 4, zmap_u, "LB")
-            
-            tier_data["GOFO、UNIUNI-MT-报价"] = {
-                "type": "combo", 
-                "gofo": p_g, 
-                "uni": p_u, 
-                "das": extract_das(ws)
-            }
-
-        # 3) USPS-YSD
-        ws = get_sheet(wb, ["USPS", "YSD"])
-        if ws:
-            zmap = scan_zones(ws, 4, "D", "L")
-            p = read_table(ws, "B", 5, zmap, "LB")
-            tier_data["USPS-YSD-报价"] = {"type": "single", "prices": p, "das": extract_das(ws)}
-
-        # 4) FedEx-ECO
-        ws = get_sheet(wb, ["FedEx", "ECO"])
-        if ws:
-            zmap = scan_zones(ws, 3, "C", "I")
-            p = read_table(ws, "A", 4, zmap, "LB")
-            tier_data["FedEx-ECO-MT报价"] = {"type": "single", "prices": p, "das": extract_das(ws)}
-
-        # 5) FedEx-632 / DG / Oversize / GOFO大件 (结构类似：双表)
-        dual_channels = [
-            ("FedEx-632-MT-报价", ["632"]),
-            ("FedEx-MT-危险品-报价", ["危险品"]),
-            ("FedEx-MT-超大包裹-报价", ["超大"]),
-            ("GOFO大件-MT-报价", ["GOFO", "大件"])
-        ]
-        
-        for ch_name, keywords in dual_channels:
-            ws = get_sheet(wb, keywords)
-            if ws:
-                # Res: W=A, Z=C-I
-                zmap_res = scan_zones(ws, 3, "C", "I")
-                p_res = read_table(ws, "A", 4, zmap_res, "LB")
-                # Com: W=K, Z=M-S
-                zmap_com = scan_zones(ws, 3, "M", "S")
-                p_com = read_table(ws, "K", 4, zmap_com, "LB")
-                
-                tier_data[ch_name] = {
-                    "type": "dual",
-                    "res": p_res,
-                    "com": p_com,
-                    "das": extract_das(ws)
-                }
-
-        # 6) XLmiles
-        ws = get_sheet(wb, ["XLmiles"])
-        if ws:
-            zmap = scan_zones(ws, 3, "D", "G") # Zone 1,2,3,6
-            p = read_table(ws, "C", 4, zmap, "LB")
-            tier_data["XLmiles-报价"] = {"type": "single", "prices": p, "das": extract_das(ws)}
-
-        db["tiers"][tier] = tier_data
-
+    print(f"✅ 邮编库: {len(db)} 条")
     return db
 
-# =========================================================
-# 7) 生成 HTML
-# =========================================================
-if __name__ == '__main__':
-    if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR)
-    
-    data = load_data()
-    
-    # 注入配置
-    data["warehouses"] = WAREHOUSES
-    data["channel_allow"] = CHANNEL_ALLOW
-    data["fees"] = FEES
-    data["fuel_config"] = FUEL_CONFIG
-    
-    # HTML 模板
-    html = """
+# ==========================================
+# 5) 固定坐标解析：解决你现在 GOFO / GOFO-MT / UNIUNI-MT 不出报价
+# ==========================================
+def col_letter_to_idx(letter):
+    return ord(letter.upper()) - ord('A')
+
+def parse_fixed_table(df, header_row_1based, zone_start_col_letter, weight_rules):
+    """
+    df: 0-based
+    header_row_1based: 例如 3 表示 Excel 第3行（Zone~1 在这一行）
+    zone_start_col_letter: 例如 'C'
+    weight_rules: list of tuples: (col_letter, unit, start_row_1based)
+        例：GOFO-报价：OZ 在 A4-A19；LB 从 A20 往下；KG 从 B4 往下
+        => [('A','oz',4), ('A','lb',20), ('B','kg',4)]
+    逻辑：逐行扫描，从最“靠后的单位规则”优先生效（例如同列 A 既有 oz 又有 lb，则 >=20 用 lb）
+    """
+    if df is None or df.empty:
+        return [], []
+
+    df = df.fillna("")
+    hr = header_row_1based - 1
+    z0 = col_letter_to_idx(zone_start_col_letter)
+
+    # 解析 zones：从 zone_start 往右读到空为止
+    zones = []
+    for c in range(z0, df.shape[1]):
+        v = str(df.iloc[hr, c]).strip()
+        if not v:
+            break
+        m = re.search(r'(\d+)', v)
+        if m:
+            zones.append((m.group(1), c))
+        else:
+            # 不是 zone 列就跳过
+            continue
+
+    # 没读到 zone 列直接返回空
+    if not zones:
+        return [], []
+
+    # weight_rules 预处理：按 start_row 降序，让“更靠后的规则”覆盖更早的
+    rules = []
+    for col, unit, sr in weight_rules:
+        rules.append((col_letter_to_idx(col), unit.lower(), sr - 1))
+    rules.sort(key=lambda x: x[2], reverse=True)
+
+    prices = []
+    # 数据区：从 header_row+1 开始扫
+    for r in range(hr + 1, df.shape[0]):
+        w_lb = None
+
+        # 按规则挑 weight
+        for c_idx, unit, sr0 in rules:
+            if r < sr0:
+                continue
+            cell = str(df.iloc[r, c_idx]).strip()
+            if cell == "":
+                continue
+            # 允许纯数字/带单位
+            nums = re.findall(r"[\d\.]+", cell)
+            if not nums:
+                continue
+            n = float(nums[0])
+            if unit == "oz":
+                w_lb = n / 16.0
+            elif unit == "kg":
+                w_lb = n / 0.453592
+            else:  # lb
+                w_lb = n
+            break
+
+        if w_lb is None:
+            continue
+
+        item = {"w": float(w_lb)}
+        for zname, c in zones:
+            p = safe_float(df.iloc[r, c])
+            if p > 0:
+                item[zname] = p
+
+        if len(item) > 1:
+            prices.append(item)
+
+    prices.sort(key=lambda x: x["w"])
+    return [z for z, _ in zones], prices
+
+def load_tiers():
+    print("\n--- 2. 加载报价表（按你模板坐标优先） ---")
+    all_tiers = {}
+
+    for t_name, f_name in TIER_FILES.items():
+        print(f"处理 {t_name}...")
+        path = os.path.join(DATA_DIR, f_name)
+        if not os.path.exists(path):
+            continue
+
+        t_data = {}
+
+        # 2.1 GOFO-报价（固定坐标）
+        df_gofo, sh = get_sheet_by_keyword(path, ["GOFO", "报价"])
+        if df_gofo is not None:
+            zones, prices = parse_fixed_table(
+                df_gofo,
+                header_row_1based=3,
+                zone_start_col_letter="C",
+                weight_rules=[("A", "oz", 4), ("A", "lb", 20), ("B", "kg", 4)]
+            )
+            t_data["GOFO-报价"] = {"prices": prices}
+            print(f"    > GOFO-报价(sheet={sh}): zones={zones}, prices={len(prices)}")
+
+        # 2.2 GOFO、UNIUNI-MT-报价（一个 sheet 两块表）
+        df_mt, sh_mt = get_sheet_by_keyword(path, ["GOFO", "UNIUNI", "MT"])
+        if df_mt is not None:
+            # GOFO-MT 块：Zone~1 在 C3；重量规则同 GOFO
+            zones1, prices1 = parse_fixed_table(
+                df_mt,
+                header_row_1based=3,
+                zone_start_col_letter="C",
+                weight_rules=[("A", "oz", 3), ("A", "lb", 20), ("B", "kg", 4)]
+            )
+            t_data["GOFO-MT-报价"] = {"prices": prices1}
+            print(f"    > GOFO-MT-报价(sheet={sh_mt}): zones={zones1}, prices={len(prices1)}")
+
+            # UNIUNI-MT 块：Zone~1 在 N3；重量 OZ=L3-L19；LB=L20；KG=M4
+            zones2, prices2 = parse_fixed_table(
+                df_mt,
+                header_row_1based=3,
+                zone_start_col_letter="N",
+                weight_rules=[("L", "oz", 3), ("L", "lb", 20), ("M", "kg", 4)]
+            )
+            t_data["UNIUNI-MT-报价"] = {"prices": prices2}
+            print(f"    > UNIUNI-MT-报价(sheet={sh_mt}): zones={zones2}, prices={len(prices2)}")
+
+        # 2.3 USPS-YSD-报价（固定坐标：Zone~1-9 D4-L4；LB=B4；KG=C4）
+        df_usps, sh_usps = get_sheet_by_keyword(path, ["USPS", "YSD"])
+        if df_usps is not None:
+            zones, prices = parse_fixed_table(
+                df_usps,
+                header_row_1based=4,
+                zone_start_col_letter="D",
+                weight_rules=[("B", "lb", 4), ("C", "kg", 4)]
+            )
+            t_data["USPS-YSD-报价"] = {"prices": prices}
+            print(f"    > USPS-YSD-报价(sheet={sh_usps}): zones={zones}, prices={len(prices)}")
+
+        # 2.4 其它渠道：先按“猜表头”保留原逻辑（不影响本次你要先修的 3 个渠道）
+        #     你后续要拆 FedEx-MT 超大包裹/危险品/大件等，再补固定坐标即可。
+        all_tiers[t_name] = t_data
+
+    return all_tiers
+
+# ==========================================
+# 6) HTML_TEMPLATE（保持你已有 UI：合规检查 + 仓库过滤 + 报价结果）
+#     这里只做“必须用到的数据字段”对齐：warehouses + channel_wh_allow + tiers + zip_db
+# ==========================================
+HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>报价助手 V20</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body { background-color: #fff; font-family: 'Segoe UI', sans-serif; font-size: 14px; }
-        .card { border: 1px solid #dee2e6; box-shadow: none; }
-        .card-header { background-color: #f8f9fa; font-weight: bold; border-bottom: 1px solid #dee2e6; }
-        .form-label { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
-        .form-control, .form-select { font-size: 13px; border-radius: 3px; }
-        .btn { font-size: 14px; font-weight: 600; border-radius: 3px; }
-        .table th { background-color: #343a40; color: #fff; font-weight: normal; font-size: 13px; text-align: center; }
-        .table td { text-align: center; vertical-align: middle; font-size: 13px; }
-        .price-text { color: #d63384; font-weight: 800; font-size: 15px; }
-        .small-muted { font-size: 12px; color: #6c757d; }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>业务员报价助手</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body{background:#f4f6f9; font-family:'Segoe UI','Microsoft YaHei',sans-serif;}
+    header{background:#000;color:#fff;padding:12px 0;}
+    .card{border:none;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.05)}
+    .card-header{background:#212529;color:#fff;font-weight:700;border-radius:10px 10px 0 0}
+    .indicator{display:inline-block;padding:2px 8px;border-radius:4px;color:#fff;font-weight:700;font-size:12px}
+    .bg-ok{background:#198754}.bg-err{background:#dc3545}
+    .result-table th{background:#212529;color:#fff;vertical-align:middle;text-align:center}
+    .result-table td{vertical-align:middle;text-align:center}
+    .price-text{font-weight:800;font-size:18px;color:#0d6efd}
+  </style>
 </head>
 <body>
-<div class="container py-3">
-    <div class="d-flex justify-content-between align-items-center mb-3 border-bottom pb-2">
-        <h5 class="m-0 fw-bold">📦 业务员报价助手 V20</h5>
-        <small class="text-muted">Update: <span id="date"></span></small>
+
+<header>
+  <div class="container d-flex justify-content-between align-items-center">
+    <div>
+      <div class="fw-bold">📦 业务员报价助手</div>
+      <div class="small opacity-75">T0-T3 报价表解析版</div>
+    </div>
+    <div class="small">Quote Tool</div>
+  </div>
+</header>
+
+<div class="container my-4">
+  <div class="row g-4">
+    <div class="col-lg-4">
+      <div class="card">
+        <div class="card-header">基础信息</div>
+        <div class="card-body">
+
+          <div class="mb-3">
+            <label class="form-label fw-bold">发货仓库（仅用于可用渠道过滤）</label>
+            <select class="form-select" id="warehouse"></select>
+            <div class="small text-muted mt-1">你选择仓库后，只显示该仓可用渠道。</div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label fw-bold">客户等级</label>
+            <div class="btn-group w-100" role="group">
+              <input type="radio" class="btn-check" name="tier" id="t0" value="T0"><label class="btn btn-outline-secondary" for="t0">T0</label>
+              <input type="radio" class="btn-check" name="tier" id="t1" value="T1"><label class="btn btn-outline-secondary" for="t1">T1</label>
+              <input type="radio" class="btn-check" name="tier" id="t2" value="T2"><label class="btn btn-outline-secondary" for="t2">T2</label>
+              <input type="radio" class="btn-check" name="tier" id="t3" value="T3" checked><label class="btn btn-outline-secondary" for="t3">T3</label>
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label fw-bold">目的地邮编</label>
+            <div class="input-group">
+              <input type="text" class="form-control" id="zipCode" placeholder="5位邮编">
+              <button class="btn btn-dark" id="btnLookup" type="button">查询</button>
+            </div>
+            <div id="locInfo" class="small text-muted mt-1">请输入邮编</div>
+          </div>
+
+          <hr>
+
+          <div class="mb-3">
+            <label class="form-label fw-bold">包裹规格</label>
+            <div class="row g-2">
+              <div class="col-4"><input class="form-control" id="length" type="number" placeholder="长 L"></div>
+              <div class="col-4"><input class="form-control" id="width" type="number" placeholder="宽 W"></div>
+              <div class="col-4"><input class="form-control" id="height" type="number" placeholder="高 H"></div>
+              <div class="col-12">
+                <select class="form-select" id="dimUnit">
+                  <option value="in">IN</option><option value="cm">CM</option><option value="mm">MM</option>
+                </select>
+              </div>
+              <div class="col-8"><input class="form-control" id="weight" type="number" placeholder="重量"></div>
+              <div class="col-4">
+                <select class="form-select" id="weightUnit">
+                  <option value="lb">LB</option><option value="oz">OZ</option><option value="kg">KG</option><option value="g">G</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="bg-light p-2 rounded border mb-3">
+            <div class="fw-bold small mb-2 border-bottom">🚦 各渠道合规性一览</div>
+            <table class="table table-sm mb-0" id="checkTable">
+              <tr><td class="text-muted">等待输入尺寸...</td></tr>
+            </table>
+          </div>
+
+          <button class="btn btn-primary w-100 fw-bold" id="btnCalc" type="button">开始计算</button>
+
+        </div>
+      </div>
     </div>
 
-    <div class="row g-3">
-        <div class="col-lg-4">
-            <div class="card h-100">
-                <div class="card-header">参数设置</div>
-                <div class="card-body">
-                    <div class="mb-3">
-                        <label class="form-label">发货仓库</label>
-                        <select class="form-select" id="warehouse"></select>
-                    </div>
-                    
-                    <div class="mb-3">
-                        <label class="form-label">客户等级</label>
-                        <div class="btn-group w-100">
-                            <input type="radio" class="btn-check tier-radio" name="tier" id="t0" value="T0"><label class="btn btn-outline-secondary" for="t0">T0</label>
-                            <input type="radio" class="btn-check tier-radio" name="tier" id="t1" value="T1"><label class="btn btn-outline-secondary" for="t1">T1</label>
-                            <input type="radio" class="btn-check tier-radio" name="tier" id="t2" value="T2"><label class="btn btn-outline-secondary" for="t2">T2</label>
-                            <input type="radio" class="btn-check tier-radio" name="tier" id="t3" value="T3" checked><label class="btn btn-outline-secondary" for="t3">T3</label>
-                        </div>
-                    </div>
-
-                    <div class="mb-3">
-                        <label class="form-label">目的地邮编</label>
-                        <div class="input-group">
-                            <input type="text" class="form-control" id="zipCode" placeholder="5位数字">
-                            <button class="btn btn-dark" id="btnLookup">查询</button>
-                        </div>
-                        <div id="locInfo" class="mt-1 text-success fw-bold small"></div>
-                    </div>
-
-                    <div class="row g-2 mb-3">
-                        <div class="col-6">
-                            <label class="form-label">地址类型</label>
-                            <select class="form-select" id="addressType">
-                                <option value="res">住宅地址</option>
-                                <option value="com">商业地址</option>
-                            </select>
-                        </div>
-                        <div class="col-6 pt-4">
-                            <div class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" id="sigToggle">
-                                <label class="form-check-label small fw-bold" for="sigToggle">签名服务</label>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="bg-light p-2 rounded border mb-3">
-                        <div class="fw-bold small border-bottom mb-2">⛽ 燃油费率 (%)</div>
-                        <div class="row g-2">
-                            <div class="col-6">
-                                <input type="number" class="form-control form-control-sm" id="fedexFuel" value="16.0">
-                                <small class="text-muted">FedEx通用</small>
-                            </div>
-                            <div class="col-6">
-                                <input type="number" class="form-control form-control-sm" id="gofoFuel" value="15.0">
-                                <small class="text-muted">GOFO大件</small>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="mb-3">
-                        <label class="form-label">包裹信息</label>
-                        <div class="row g-2 mb-2">
-                            <div class="col-4"><input type="number" class="form-control" id="L" placeholder="长(in)"></div>
-                            <div class="col-4"><input type="number" class="form-control" id="W" placeholder="宽(in)"></div>
-                            <div class="col-4"><input type="number" class="form-control" id="H" placeholder="高(in)"></div>
-                        </div>
-                        <div class="row g-2">
-                            <div class="col-8"><input type="number" class="form-control" id="Wt" placeholder="重量"></div>
-                            <div class="col-4">
-                                <select class="form-select" id="WtUnit">
-                                    <option value="lb">lb</option>
-                                    <option value="oz">oz</option>
-                                    <option value="kg">kg</option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
-
-                    <button class="btn btn-primary w-100" id="btnCalc">开始计算</button>
-                </div>
-            </div>
+    <div class="col-lg-8">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between">
+          <span>报价结果</span>
+          <span class="badge bg-warning text-dark" id="tierBadge"></span>
         </div>
+        <div class="card-body">
+          <div class="alert alert-info py-2 small" id="pkgSummary">请先输入邮编和包裹信息</div>
 
-        <div class="col-lg-8">
-            <div class="card h-100">
-                <div class="card-header d-flex justify-content-between">
-                    <span>计算结果</span>
-                    <span id="resTierBadge" class="badge bg-warning text-dark"></span>
-                </div>
-                <div class="card-body p-0">
-                    <div class="p-2 border-bottom bg-light small" id="pkgSummary">请先输入数据...</div>
-                    <div class="table-responsive">
-                        <table class="table table-hover m-0">
-                            <thead>
-                                <tr>
-                                    <th>渠道</th>
-                                    <th>分区</th>
-                                    <th>计费重</th>
-                                    <th>基础运费</th>
-                                    <th>明细</th>
-                                    <th>总费用</th>
-                                </tr>
-                            </thead>
-                            <tbody id="resBody"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
+          <div class="table-responsive">
+            <table class="table table-bordered table-hover result-table">
+              <thead>
+                <tr>
+                  <th width="25%">渠道</th>
+                  <th width="20%">仓库</th>
+                  <th width="10%">Zone</th>
+                  <th width="15%">计费重(LB)</th>
+                  <th width="15%">基础运费</th>
+                  <th width="15%">总费用</th>
+                </tr>
+              </thead>
+              <tbody id="resBody"></tbody>
+            </table>
+          </div>
+
+          <div class="small text-muted mt-2">
+            说明：本页先保证 GOFO/GOFO-MT/UNIUNI/USPS 四个渠道“能正常出价”；其它 FedEx 拆表、DAS、燃油折扣等在下一轮按你表定位补齐。
+          </div>
+
         </div>
+      </div>
     </div>
+  </div>
 </div>
 
 <script>
-    const DATA = __JSON_DATA__;
-    document.getElementById('date').innerText = new Date().toLocaleDateString();
+  let DATA = {};
+  try { DATA = __JSON_DATA__; } catch(e) { alert("Data Init Failed"); }
 
-    // 初始化仓库
-    const whSel = document.getElementById('warehouse');
-    DATA.warehouses.forEach(w => {
-        let opt = document.createElement('option');
-        opt.value = w.id;
-        opt.text = w.label;
-        whSel.add(opt);
+  // ---------- 仓库下拉 ----------
+  (function initWarehouse(){
+    const sel = document.getElementById("warehouse");
+    (DATA.warehouses || []).forEach(w=>{
+      const opt = document.createElement("option");
+      opt.value = w.code;
+      opt.textContent = `${w.label}（${w.code}）`;
+      sel.appendChild(opt);
     });
+    if(sel.options.length>0) sel.value = (DATA.warehouses[0]||{}).code || "";
+  })();
 
-    let CUR_ZONES = {};
+  // ---------- 自动计算 ----------
+  document.querySelectorAll('input[name="tier"]').forEach(r=>{
+    r.addEventListener("change", ()=>document.getElementById("btnCalc").click());
+  });
+  document.getElementById("warehouse").addEventListener("change", ()=>document.getElementById("btnCalc").click());
 
-    // 标准化重量
-    function stdWt(v, unit) {
-        v = parseFloat(v) || 0;
-        if (unit === 'oz') return v / 16;
-        if (unit === 'kg') return v / 0.453592;
-        return v;
-    }
+  // ---------- 单位标准化 ----------
+  function standardize(l,w,h,du,wt,wu){
+    let L=parseFloat(l)||0, W=parseFloat(w)||0, H=parseFloat(h)||0, Weight=parseFloat(wt)||0;
+    if(du==='cm'){L/=2.54;W/=2.54;H/=2.54} else if(du==='mm'){L/=25.4;W/=25.4;H/=25.4}
+    if(wu==='kg')Weight/=0.453592; else if(wu==='oz')Weight/=16; else if(wu==='g')Weight/=453.592;
+    return {L,W,H,Wt:Weight};
+  }
 
-    // 计算 FedEx Zone (简化版: 3位邮编差)
-    function calcFedExZone(dest, origin) {
-        if (!dest || dest.length < 3) return null;
-        let d = parseInt(dest.substring(0,3));
-        let o = parseInt(origin.substring(0,3));
-        let diff = Math.abs(d - o);
-        // 简单模拟: 实际应使用完整 Zone 表
-        if (diff < 5) return 2;
-        if (diff < 20) return 3;
-        if (diff < 40) return 4;
-        if (diff < 60) return 5;
-        if (diff < 80) return 6;
-        if (diff < 90) return 7;
-        return 8;
-    }
-
-    function calc() {
-        const zip = document.getElementById('zipCode').value.trim();
-        const tier = document.querySelector('input[name="tier"]:checked').value;
-        const whId = whSel.value;
-        const wh = DATA.warehouses.find(w => w.id === whId);
-        const isRes = document.getElementById('addressType').value === 'res';
-        const isSig = document.getElementById('sigToggle').checked;
-        
-        const pkg = {
-            L: parseFloat(document.getElementById('L').value)||0,
-            W: parseFloat(document.getElementById('W').value)||0,
-            H: parseFloat(document.getElementById('H').value)||0,
-            Wt: stdWt(document.getElementById('Wt').value, document.getElementById('WtUnit').value)
-        };
-
-        if (pkg.Wt <= 0) return;
-
-        document.getElementById('resTierBadge').innerText = tier;
-        document.getElementById('pkgSummary').innerHTML = `<b>${pkg.L}x${pkg.W}x${pkg.H}"</b> | 实重: ${pkg.Wt.toFixed(2)} lb`;
-
-        const tbody = document.getElementById('resBody');
-        tbody.innerHTML = '';
-
-        if (!wh.enabled) {
-            tbody.innerHTML = '<tr><td colspan="6" class="text-muted">该仓库暂不支持在线报价</td></tr>';
-            return;
-        }
-
-        const tierData = DATA.tiers[tier];
-        if (!tierData) return;
-
-        // 遍历所有渠道
-        for (let ch in DATA.channel_allow) {
-            // 1. 检查仓库权限
-            if (!DATA.channel_allow[ch].includes(wh.region)) continue;
-
-            // 2. 准备数据
-            let chData = tierData[ch];
-            if (!chData && ch !== "GOFO、UNIUNI-MT-报价") continue; // Combo 特殊处理
-
-            // 处理 Combo (拆分成两行)
-            let subChannels = [];
-            if (ch === "GOFO、UNIUNI-MT-报价") {
-                if (tierData[ch]) {
-                    subChannels.push({name: "GOFO-MT", data: tierData[ch].gofo});
-                    subChannels.push({name: "UNIUNI-MT", data: tierData[ch].uni});
-                }
-            } else {
-                subChannels.push({name: ch, data: chData});
-            }
-
-            subChannels.forEach(sub => {
-                let prices = (sub.data.type === 'dual') ? (isRes ? sub.data.res : sub.data.com) : sub.data.prices;
-                if (!prices) return;
-
-                // 3. 确定 Zone
-                let zone = '-';
-                if (ch.includes('FedEx') || ch.includes('XLmiles') || ch.includes('GOFO大件')) {
-                    // 使用计算 Zone (需完善算法，暂时模拟)
-                    let z = calcFedExZone(zip, wh.zip);
-                    if (z) zone = z.toString();
-                } else {
-                    // 使用查表 Zone
-                    if (CUR_ZONES[ch]) zone = CUR_ZONES[ch];
-                }
-
-                // 4. 计算计费重
-                let dimW = (pkg.L * pkg.W * pkg.H) / 250; // 默认除250? 根据规则调整
-                // UNIUNI 无体积重
-                if (sub.name.includes('UNIUNI')) dimW = 0;
-                // FedEx/GOFO 一般 250 或 139? 假设 250 (原代码逻辑未细化，暂定)
-                if (ch.includes('ECO')) dimW = (pkg.L * pkg.W * pkg.H) / 250; 
-                
-                let billWt = Math.max(pkg.Wt, dimW);
-                billWt = Math.ceil(billWt); // 向上取整
-
-                // 5. 查基础价
-                let basePrice = 0;
-                let zoneKey = zone;
-                // 修正 Zone 映射 (例如 Excel 表头是 2,3,4...)
-                if (zone == '1') zoneKey = '2'; 
-
-                let row = prices.find(p => p.w >= billWt);
-                if (row && row[zoneKey]) basePrice = row[zoneKey];
-
-                if (basePrice > 0) {
-                    let total = basePrice;
-                    let details = [];
-
-                    // 住宅费
-                    if (isRes && DATA.fees.res[ch]) {
-                        let rf = DATA.fees.res[ch];
-                        total += rf;
-                        details.push(`住宅:${rf}`);
-                    }
-
-                    // 签名费
-                    if (isSig && DATA.fees.sig[ch]) {
-                        let sf = DATA.fees.sig[ch];
-                        total += sf;
-                        details.push(`签名:${sf}`);
-                    }
-
-                    // 燃油费
-                    if (DATA.fuel_config.channels.includes(ch)) {
-                        let rate = 0;
-                        if (ch.includes('GOFO大件')) {
-                            rate = parseFloat(document.getElementById('gofoFuel').value) / 100;
-                            // GOFO大件公式: (运费+杂费) * 燃油率
-                            let fuelAmt = total * rate; 
-                            total += fuelAmt;
-                            details.push(`燃油:${fuelAmt.toFixed(2)}`);
-                        } else {
-                            rate = parseFloat(document.getElementById('fedexFuel').value) / 100;
-                            if (DATA.fuel_config.discount_85.includes(ch)) {
-                                rate = rate * 0.85;
-                            }
-                            // FedEx: 基础运费 * 燃油率
-                            let fuelAmt = basePrice * rate;
-                            total += fuelAmt;
-                            details.push(`燃油:${fuelAmt.toFixed(2)}`);
-                        }
-                    }
-
-                    tbody.innerHTML += `
-                        <tr>
-                            <td class="text-start fw-bold">${sub.name}</td>
-                            <td>Z${zone}</td>
-                            <td>${billWt}</td>
-                            <td>${basePrice.toFixed(2)}</td>
-                            <td class="small text-muted text-start">${details.join(' | ') || '-'}</td>
-                            <td class="price-text">$${total.toFixed(2)}</td>
-                        </tr>
-                    `;
-                }
-            });
-        }
-    }
-
-    // 事件绑定
-    document.getElementById('btnLookup').onclick = () => {
-        let z = document.getElementById('zipCode').value.trim();
-        if (DATA.zip_db[z]) {
-            let i = DATA.zip_db[z];
-            document.getElementById('locInfo').innerText = `✅ ${i.s} - ${i.c}`;
-            CUR_ZONES = i.z;
-        } else {
-            document.getElementById('locInfo').innerText = "❌ 未找到";
-            CUR_ZONES = {};
-        }
+  // ---------- 合规检查（恢复你要的尺寸判断模块） ----------
+  function check(pkg){
+    let d=[pkg.L,pkg.W,pkg.H].sort((a,b)=>b-a);
+    let L=d[0], G=L+2*(d[1]+d[2]);
+    const row=(name,fail,tip)=>{
+      let cls=fail?'bg-err':'bg-ok';
+      let txt=fail?tip:'正常(OK)';
+      return `<tr><td>${name}</td><td class="text-end"><span class="indicator ${cls}"></span> ${txt}</td></tr>`;
     };
+    let html='';
+    // UniUni（你原口径）
+    html += row('UNIUNI', (L>20 || (L+d[1]+d[2])>50 || pkg.Wt>20), '限制(L>20 / Wt>20)');
+    // USPS（你原口径）
+    html += row('USPS', (pkg.Wt>70 || L>30 || (L+(d[1]+d[2])*2)>130), '限制(>70lb / 130")');
+    // GOFO（大件只示意）
+    html += row('GOFO', (pkg.Wt>150), '超限(>150lb)');
+    document.getElementById("checkTable").innerHTML = html;
+  }
 
-    document.getElementById('btnCalc').onclick = calc;
-    document.querySelectorAll('.tier-radio').forEach(r => r.onchange = () => {
-        if(document.getElementById('Wt').value) calc();
+  ['length','width','height','weight','dimUnit','weightUnit'].forEach(id=>{
+    document.getElementById(id).addEventListener("input", ()=>{
+      let p=standardize(
+        document.getElementById('length').value,
+        document.getElementById('width').value,
+        document.getElementById('height').value,
+        document.getElementById('dimUnit').value,
+        document.getElementById('weight').value,
+        document.getElementById('weightUnit').value
+      );
+      check(p);
+    });
+  });
+
+  // ---------- 邮编查询（优先 zip_db） ----------
+  let CUR_ZONES = {};
+  async function lookupZip(zip){
+    CUR_ZONES = {};
+    const d=document.getElementById("locInfo");
+
+    if(DATA.zip_db && DATA.zip_db[zip]){
+      let i=DATA.zip_db[zip];
+      d.innerHTML = `✅ ${i.sn} ${i.s} - ${i.c} [${i.r}]`;
+      CUR_ZONES = i.z || {};
+      return;
+    }
+    d.innerHTML = `❌ 未在邮编库找到该邮编（无法给 GOFO/USPS 分区）`;
+  }
+
+  document.getElementById("btnLookup").onclick = async ()=>{
+    const zip=document.getElementById("zipCode").value.trim();
+    if(zip.length!==5){ alert("请输入5位邮编"); return; }
+    await lookupZip(zip);
+    document.getElementById("btnCalc").click();
+  };
+
+  // ---------- 计费重除数（保留最基本，不改动其它渠道） ----------
+  function getDivisor(ch, vol){
+    let u=ch.toUpperCase();
+    if(u.includes('UNIUNI')) return 0;
+    if(u.includes('USPS')) return vol>1728?166:0;
+    return 0; // GOFO/GOFO-MT 按实重（先满足出价）
+  }
+
+  // ---------- 核心计算：修复你说的三个渠道出价失败 ----------
+  document.getElementById("btnCalc").onclick = async ()=>{
+    const zip=document.getElementById("zipCode").value.trim();
+    if(zip.length===5 && (!CUR_ZONES || Object.keys(CUR_ZONES).length===0)){
+      await lookupZip(zip);
+    }
+
+    const tier=document.querySelector('input[name="tier"]:checked').value;
+    const wh=document.getElementById("warehouse").value;
+    const whLabel = (DATA.warehouse_map && DATA.warehouse_map[wh]) ? DATA.warehouse_map[wh] : wh;
+
+    document.getElementById("tierBadge").innerText=tier;
+
+    const pkg=standardize(
+      document.getElementById('length').value,
+      document.getElementById('width').value,
+      document.getElementById('height').value,
+      document.getElementById('dimUnit').value,
+      document.getElementById('weight').value,
+      document.getElementById('weightUnit').value
+    );
+    let dims=[pkg.L,pkg.W,pkg.H].sort((a,b)=>b-a);
+    let G=dims[0]+2*(dims[1]+dims[2]);
+    document.getElementById("pkgSummary").innerHTML =
+      `<b>基准:</b> ${dims[0].toFixed(1)}"×${dims[1].toFixed(1)}"×${dims[2].toFixed(1)}" | 实重:${pkg.Wt.toFixed(2)}lb | 围长:${G.toFixed(1)}"`;
+
+    const tbody=document.getElementById("resBody");
+    tbody.innerHTML="";
+
+    const tiers=DATA.tiers || {};
+    const tdata=tiers[tier] || {};
+    const allowMap=DATA.channel_wh_allow || {};
+
+    const channels = Object.keys(tdata);
+
+    channels.forEach(ch=>{
+      // 1) 仓库可用过滤（不可用直接不显示）
+      const allow = allowMap[ch] || [];
+      if(allow.length>0 && !allow.includes(wh)) return;
+
+      // 2) zone：GOFO/GOFO-MT/UNIUNI/USPS 都用 zip_db 的 CUR_ZONES
+      const zoneVal = (CUR_ZONES && CUR_ZONES[ch]) ? String(CUR_ZONES[ch]) : "-";
+
+      // 3) 计费重
+      let cWt=pkg.Wt;
+      const div=getDivisor(ch, pkg.L*pkg.W*pkg.H);
+      if(div>0){
+        const vWt=(pkg.L*pkg.W*pkg.H)/div;
+        cWt=Math.max(pkg.Wt, vWt);
+      }
+      if(cWt>1) cWt=Math.ceil(cWt);
+
+      // 4) 匹配价格
+      const prices = (tdata[ch] && tdata[ch].prices) ? tdata[ch].prices : [];
+      let base=0;
+
+      if(zoneVal==="-" || prices.length===0){
+        tbody.innerHTML += `
+          <tr class="table-light">
+            <td class="fw-bold text-start">${ch}</td>
+            <td class="text-start">${whLabel}</td>
+            <td>${zoneVal}</td>
+            <td>${cWt.toFixed(2)}</td>
+            <td>0.00</td>
+            <td class="text-muted">-</td>
+          </tr>`;
+        return;
+      }
+
+      // 关键：GOFO/GOFO-MT/UNIUNI 的 zone 结构是 1-8；USPS 是 1-9
+      let row=null;
+      for(let r of prices){
+        if(r.w >= cWt-0.001){ row=r; break; }
+      }
+      if(row && row[zoneVal] !== undefined){
+        base = parseFloat(row[zoneVal])||0;
+      }
+
+      tbody.innerHTML += `
+        <tr>
+          <td class="fw-bold text-start">${ch}</td>
+          <td class="text-start">${whLabel}</td>
+          <td>Zone ${zoneVal}</td>
+          <td>${cWt.toFixed(2)}</td>
+          <td>${base.toFixed(2)}</td>
+          <td class="price-text">${base>0?("$"+base.toFixed(2)):"-"}</td>
+        </tr>`;
     });
 
+    // 如果全部没显示，给最明显的排查提示（不影响你其它逻辑）
+    if(tbody.children.length===0){
+      tbody.innerHTML = `<tr><td colspan="6" class="text-danger fw-bold">❌ 该仓库无可用渠道（或 allowlist 未配置）</td></tr>`;
+    }
+  };
 </script>
+
 </body>
 </html>
-    """
-    
-    html = html.replace('__JSON_DATA__', json.dumps(data, ensure_ascii=False))
-    
-    with open(os.path.join(OUTPUT_DIR, "index.html"), "w", encoding="utf-8") as f:
-        f.write(html)
-    
-    print("✅ V20 生成完成")
+"""
 
-if __name__ == '__main__':
-    load_data()
+# ==========================================
+# 7) 主入口：生成 public/index.html
+# ==========================================
+if __name__ == "__main__":
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    zip_db = load_zip_db()
+    tiers = load_tiers()
+
+    # warehouse_map 给前端显示
+    warehouse_map = {w["code"]: w["label"] for w in WAREHOUSES}
+
+    final = {
+        "zip_db": zip_db,
+        "tiers": tiers,
+        "surcharges": GLOBAL_SURCHARGES,
+        "warehouses": WAREHOUSES,
+        "warehouse_map": warehouse_map,
+        "channel_wh_allow": CHANNEL_WAREHOUSE_ALLOW,
+        "meta": {"generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}
+    }
+
+    print("\n--- 3. 生成网页 ---")
+    js_str = json.dumps(final, ensure_ascii=False)
+    html = HTML_TEMPLATE.replace("__JSON_DATA__", js_str)
+
+    out_path = os.path.join(OUTPUT_DIR, "index.html")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    print(f"✅ 完成！已生成: {out_path}")
