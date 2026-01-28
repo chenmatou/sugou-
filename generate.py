@@ -32,7 +32,7 @@ WAREHOUSE_DB = {
 }
 
 # --- 渠道配置表 (核心逻辑) ---
-# allow_wh: 允许的仓库Code列表 (根据您的要求：美西/美中/美东 对应具体邮编)
+# allow_wh: 允许的仓库Code列表
 # fuel_mode: 'discount_85'(85折), 'standard'(全额), 'none'(无)
 # fees: 硬编码的附加费 (res=住宅, sig=签名)
 # no_peak: 是否强制取消旺季
@@ -40,81 +40,71 @@ CHANNEL_CONFIG = {
     "GOFO-报价": {
         "keywords": ["GOFO", "报价"], 
         "exclude": ["MT", "UNIUNI", "大件"],
-        # 美西91730 + 美中
         "allow_wh": ["91730", "60632"], 
         "fuel_mode": "none", 
         "fees": {"res": 0, "sig": 0} 
     },
     "GOFO-MT-报价": {
         "keywords": ["GOFO", "UNIUNI", "MT"],
-        "sheet_col_offset": "left", # 同表左侧
-        # 美西91730 + 美中
+        "sheet_col_offset": "left", 
         "allow_wh": ["91730", "60632"],
         "fuel_mode": "none",
         "fees": {"res": 0, "sig": 0}
     },
     "UNIUNI-MT-报价": {
         "keywords": ["GOFO", "UNIUNI", "MT"],
-        "sheet_col_offset": "right", # 同表右侧
-        # 美西91730 + 美中
+        "sheet_col_offset": "right", 
         "allow_wh": ["91730", "60632"],
         "fuel_mode": "none",
         "fees": {"res": 0, "sig": 0}
     },
     "USPS-YSD-报价": {
         "keywords": ["USPS", "YSD"],
-        # 美西、美中
         "allow_wh": ["91730", "91752", "60632"], 
         "fuel_mode": "none",
         "fees": {"res": 0, "sig": 0},
-        "no_peak": True # 取消旺季
+        "no_peak": True 
     },
     "FedEx-632-MT-报价": {
         "keywords": ["632"],
-        # 美西、美中、美东 (全部)
         "allow_wh": ["91730", "91752", "60632", "08691", "06801", "11791", "07032"],
-        "fuel_mode": "discount_85", # 燃油85折
+        "fuel_mode": "discount_85", 
         "fees": {"res": 2.61, "sig": 4.37}
     },
     "FedEx-MT-超大包裹-报价": {
         "keywords": ["超大包裹"],
-        # 美西、美中、美东 (全部)
         "allow_wh": ["91730", "91752", "60632", "08691", "06801", "11791", "07032"],
-        "fuel_mode": "discount_85", # 燃油85折
+        "fuel_mode": "discount_85", 
         "fees": {"res": 2.61, "sig": 4.37}
     },
     "FedEx-ECO-MT报价": {
         "keywords": ["ECO", "MT"],
-        # 美西、美中、美东 (全部)
         "allow_wh": ["91730", "91752", "60632", "08691", "06801", "11791", "07032"],
-        "fuel_mode": "standard", # 全额燃油 (未提及折扣)
+        "fuel_mode": "standard", 
         "fees": {"res": 0, "sig": 0}
     },
     "FedEx-MT-危险品-报价": {
         "keywords": ["危险品"],
-        # 美东 + 美中 (排除美西)
         "allow_wh": ["60632", "08691", "06801", "11791", "07032"], 
-        "fuel_mode": "standard", # 无折扣
+        "fuel_mode": "standard", 
         "fees": {"res": 3.32, "sig": 9.71}
     },
     "GOFO大件-MT-报价": {
         "keywords": ["GOFO大件", "MT"],
-        # 美西 + 美东 (文档未提美中，严格执行)
         "allow_wh": ["91730", "91752", "08691", "06801", "11791", "07032"], 
         "fuel_mode": "standard", 
-        "fees": {"res": 2.93, "sig": 0} # 签名费不支持
+        "fees": {"res": 2.93, "sig": 0} 
     },
     "XLmiles-报价": {
         "keywords": ["XLmiles"],
-        # 仅美西91730
         "allow_wh": ["91730"], 
-        "fuel_mode": "none", # 一口价含油
+        "fuel_mode": "none", 
         "fees": {"res": 0, "sig": 10.20}
     }
 }
 
 # ==========================================
-# 2. 网页模板 (包含被误删的校验JS)
+# 2. 网页模板 (BUG 已修复: id="warehouse" -> id="whSelect")
 # ==========================================
 HTML_TEMPLATE = r"""
 <!DOCTYPE html>
@@ -155,7 +145,7 @@ HTML_TEMPLATE = r"""
           <form id="calcForm">
             <div class="mb-3">
               <label class="form-label fw-bold small">发货仓库 (Warehouse)</label>
-              <select class="form-select" id="warehouse"></select>
+              <select class="form-select" id="whSelect"></select>
               <div class="form-text small text-primary" id="whInfo"></div>
             </div>
 
@@ -267,15 +257,13 @@ HTML_TEMPLATE = r"""
   // 注入的数据
   const DATA = __JSON_DATA__;
 
-  // --- 1. 逻辑恢复：XLmiles 尺寸判定 (AH/OS/OM) ---
-  // 这是您之前要求的核心判定逻辑
+  // --- 1. 判定逻辑 (保持不动) ---
   function getXLService(L, W, H, Wt) {
-    // 排序边长
     let dims = [L, W, H].sort((a,b) => b-a);
     let maxL = dims[0];
     let girth = maxL + 2*(dims[1] + dims[2]);
     
-    // 逻辑判定 (AH: L<=96 G<=130 | OS: L<=108 G<=165 | OM: L<=144 G<=225)
+    // AH: L<=96 G<=130 | OS: L<=108 G<=165 | OM: L<=144 G<=225
     if (maxL <= 96 && girth <= 130 && Wt <= 150) return { code: "AH", name: "AH大件" };
     if (maxL <= 108 && girth <= 165 && Wt <= 150) return { code: "OS", name: "OS大件" };
     if (maxL <= 144 && girth <= 225 && Wt <= 200) return { code: "OM", name: "OM超限" };
@@ -283,36 +271,31 @@ HTML_TEMPLATE = r"""
     return { code: null, name: "超XL规格" };
   }
 
-  // --- 2. 逻辑恢复：各渠道合规性检查 (Check Logic) ---
   function validateChannel(chName, pkg) {
     let dims = [pkg.L, pkg.W, pkg.H].sort((a,b) => b-a);
     let L = dims[0];
     let G = L + 2*(dims[1] + dims[2]);
 
-    // UNIUNI: 限制较严格 (假设20lb/20inch，根据之前逻辑)
     if (chName.includes("UNIUNI")) {
       if (pkg.Wt > 20) return "限重20lb";
       if (L > 20) return "限长20in";
     }
-    // USPS: Max 70lb, G<=130
     if (chName.includes("USPS")) {
       if (pkg.Wt > 70) return "限重70lb";
       if (G > 130) return "超尺寸(G>130)";
     }
-    // XLmiles: Max 200lb
     if (chName.includes("XLmiles")) {
       if (pkg.Wt > 200) return "超重>200lb";
       let svc = getXLService(pkg.L, pkg.W, pkg.H, pkg.Wt);
       if (!svc.code) return "超XL规格(>OM)";
     }
-    // FedEx常规: Max 150lb
     if (chName.includes("FedEx") && !chName.includes("超大")) {
         if (pkg.Wt > 150) return "超重>150lb";
     }
     return "OK";
   }
 
-  // --- 3. 基础初始化 ---
+  // --- 2. 初始化 (修复: 这里的ID现在能对应上了) ---
   const whSelect = document.getElementById('whSelect');
   Object.keys(DATA.warehouses).forEach(code => {
     let opt = document.createElement('option');
@@ -324,27 +307,25 @@ HTML_TEMPLATE = r"""
     let r = DATA.warehouses[whSelect.value].region;
     document.getElementById('whInfo').innerText = `区域归属: ${r}`;
   });
-  whSelect.dispatchEvent(new Event('change'));
+  // 触发一次以显示默认值
+  if (whSelect.options.length > 0) whSelect.dispatchEvent(new Event('change'));
 
-  // Zone计算 (简化版，实际应依赖邮编库)
+  // Zone计算 (保持不动)
   function getZone(zip, whCode) {
     if (!zip || zip.length < 3) return 8;
     let d = parseInt(zip.substring(0, 3));
     let region = DATA.warehouses[whCode].region;
     
-    // 美西发美西
     if (region === 'WEST') {
       if (d >= 900 && d <= 935) return 2;
       if (d >= 936 && d <= 994) return 4;
       return 8;
     }
-    // 美东发美东
     if (region === 'EAST') {
       if (d >= 70 && d <= 89) return 2;
       if (d >= 100 && d <= 199) return 4;
       return 8;
     }
-    // 美中
     if (region === 'CENTRAL') {
       if (d >= 600 && d <= 629) return 2;
       return 6;
@@ -352,7 +333,7 @@ HTML_TEMPLATE = r"""
     return 8;
   }
 
-  // --- 4. 核心计算主程序 ---
+  // --- 3. 计算主程序 (保持不动) ---
   document.getElementById('btnCalc').onclick = () => {
     let whCode = whSelect.value;
     let tier = document.querySelector('input[name="tier"]:checked').value;
@@ -585,7 +566,7 @@ def get_excel_data():
 if __name__ == '__main__':
     if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR)
     
-    print("--- Starting Generation (Rigorous Mode) ---")
+    print("--- Starting Generation (Fixed ID Bug) ---")
     
     # 1. 抓取 Excel
     data = get_excel_data()
