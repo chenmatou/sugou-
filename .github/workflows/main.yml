@@ -1,12 +1,12 @@
-name: Deploy Quote Tool
+name: Deploy Shipping Calculator
 
 on:
+  schedule:
+    - cron: '0 8 * * *' # 北京时间下午4点 (UTC 8:00)，可自行调整
   push:
     branches:
       - main
   workflow_dispatch:
-  schedule:
-    - cron: "0 3 * * *"   # 每天 UTC 03:00 跑一次（可自行改）
 
 permissions:
   contents: write
@@ -15,26 +15,29 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code (拉取代码)
+      - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Set up Python (设置Python环境)
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.9"
+          python-version: '3.9'
 
-      - name: Install dependencies (安装依赖库)
+      - name: Install Dependencies
         run: |
-          pip install pandas openpyxl pypdf
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # 确保有 pandas openpyxl
+          pip install pandas openpyxl
 
-      - name: Run Generator (执行生成脚本)
+      - name: Generate Data
         run: |
+          mkdir -p public
           python generate.py
-          test -f public/index.html
+          # 确保 index.html 也在 public 下（如果源文件在根目录，复制过去）
+          cp index.html public/index.html
 
-      - name: Deploy to GitHub Pages (发布到网页)
-        uses: peaceiris/actions-gh-pages@v3
+      - name: Deploy to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./public
-          commit_message: "Auto-deploy: update prices"
+          folder: public
+          branch: gh-pages
