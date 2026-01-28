@@ -209,13 +209,11 @@ HTML_TEMPLATE = """
                     let rates = periodData.rates;
                     
                     if (periodData.type === 'xlmiles') {
-                        // XLmiles 简化逻辑：匹配重量，查找该 Zone 的价格
                         const candidates = rates.filter(r => this.weight <= r.weight && r.prices[`zone${this.zone}`]);
-                        // 取第一个符合条件（通常是最便宜的档位，或者按AH/OS逻辑排序）
                         if (candidates.length > 0) basePrice = candidates[0].prices[`zone${this.zone}`];
                     } else if (periodData.type === 'split') {
                         const table = this.addressType === 'residential' ? rates.residential : rates.commercial;
-                        const match = table.find(r => r.weight >= this.weight); // 简单查找
+                        const match = table.find(r => r.weight >= this.weight);
                         if (match && match.prices[`zone${this.zone}`]) basePrice = match.prices[`zone${this.zone}`];
                     } else {
                         const match = rates.find(r => r.weight >= this.weight);
@@ -255,20 +253,24 @@ HTML_TEMPLATE = """
 
 def safe_float(val):
     try:
+        # 核心修正：显式处理空值
+        if pd.isna(val) or val is None: return 0.0
+        
         if isinstance(val, str):
             val = val.replace('$', '').replace(',', '').strip()
-        return float(val)
+            if not val: return 0.0
+        
+        f = float(val)
+        if pd.isna(f): return 0.0
+        return f
     except:
         return 0.0
 
 def get_sheet_by_keyword(excel_path, keyword):
-    """尝试加载 csv 或 excel"""
     try:
         csv_name = f"{excel_path} - {keyword}.csv"
-        # 优先读CSV（适配当前环境）
         if os.path.exists(csv_name):
             return pd.read_csv(csv_name, header=None)
-        # 其次读Excel（适配本地）
         if os.path.exists(excel_path):
             xls = pd.ExcelFile(excel_path)
             for sheet in xls.sheet_names:
@@ -281,9 +283,11 @@ def get_sheet_by_keyword(excel_path, keyword):
 def extract_fuel(df, channel_name):
     """智能搜索燃油费率"""
     fuel = 0.0
-    # 搜索前 5 行，前 30 列
-    for r in range(5):
-        for c in range(30):
+    found = False
+    
+    # 扩大搜索范围，并增强容错
+    for r in range(min(5, len(df))):
+        for c in range(min(30, df.shape[1])):
             try:
                 val = str(df.iloc[r, c])
                 if "燃油" in val or "Fuel" in val:
@@ -292,13 +296,16 @@ def extract_fuel(df, channel_name):
                     f_val = safe_float(candidate)
                     if f_val > 0:
                         fuel = f_val
+                        found = True
                         break
             except: pass
-        if fuel > 0: break
+        if found: break
     
-    # 默认值兜底
+    # 默认值兜底 (如果文件里没写或读取失败，给一个默认值防止NaN)
     if fuel == 0 and "FedEx" in channel_name:
-        fuel = 0.16 # 默认值
+        fuel = 0.16 # 默认16%
+    
+    # 百分比修正
     if fuel > 1: fuel = fuel / 100.0
     
     return fuel
@@ -319,21 +326,11 @@ def parse_standard_table(df, loc):
             if weight == 0: continue
             
             row_rates = {}
-            # 假设 Zone 1-9
+            header_txt = str(df.iloc[header_row, start_col])
+            start_z_num = 2 if "2" in header_txt else 1
+            
             for z in range(1, 10):
-                # 智能推断列: 如果表头是 Zone2, 则 col_idx 需要偏移
-                # 简单处理：如果是 Zone X，则 Col = start + (X - StartZoneNum)
-                # 这里假设 start_col 对应的是 Zone 1 或 Zone 2，取决于 header
-                # 简单化：假设连续
-                
-                # 判断 start_col 是 Zone 几?
-                # 看 header row
-                header_txt = str(df.iloc[header_row, start_col])
-                start_z_num = 1
-                if "2" in header_txt: start_z_num = 2
-                
                 if z < start_z_num: continue
-                
                 col_idx = start_col + (z - start_z_num)
                 if col_idx < len(row_data):
                     p = safe_float(row_data[col_idx])
@@ -349,17 +346,12 @@ def parse_split_table(df, loc):
     return {"residential": res, "commercial": com}
 
 def parse_xlmiles(df):
-    # XLmiles 特殊解析
-    # Zone Cols: D(3)=Z1, E(4)=Z2, F(5)=Z3, G(6)=Z6
     zone_map = {3: 1, 4: 2, 5: 3, 6: 6}
     rates = []
-    
-    # 扫描所有行，寻找符合重量格式的行 "0＜重量≤70lbs"
     for r in range(len(df)):
         try:
             col2 = str(df.iloc[r, 2])
             if "重量" in col2 and ("<" in col2 or "≤" in col2):
-                # 提取重量上限
                 nums = re.findall(r"[-+]?\d*\.\d+|\d+", col2)
                 if nums:
                     weight = float(nums[-1])
@@ -376,25 +368,23 @@ def parse_xlmiles(df):
 def main():
     if not os.path.exists('public'): os.makedirs('public')
     
-    # 1. 生成 data.json
     all_data = {}
     for t in ['T0', 'T1', 'T2', 'T3']:
         print(f"Processing {t}...")
         t_data = {"channels": {}}
         base_path = f"data/{t}.xlsx"
-        if not os.path.exists(base_path): base_path = f"{t}.xlsx" # Fallback
+        if not os.path.exists(base_path): base_path = f"{t}.xlsx" 
         
         for name, cfg in CHANNEL_CONFIG.items():
             df = get_sheet_by_keyword(base_path, cfg['sheet_keyword'])
             if df is None or df.empty: continue
             
-            # 燃油
             fuel = extract_fuel(df, name)
-            # 折扣
             if cfg['fuel_discount'] < 1:
-                fuel = fuel * cfg['fuel_discount']
+                fuel_final = fuel * cfg['fuel_discount']
+                print(f"  {name}: Fuel {fuel:.4f} -> 85% Discount -> {fuel_final:.4f}")
+                fuel = fuel_final
             
-            # 费率
             if cfg['type'] == 'standard': rates = parse_standard_table(df, cfg['loc'])
             elif cfg['type'] == 'split': rates = parse_split_table(df, cfg['loc'])
             elif cfg['type'] == 'xlmiles': rates = parse_xlmiles(df)
@@ -411,7 +401,6 @@ def main():
     with open('public/data.json', 'w', encoding='utf-8') as f:
         json.dump({"warehouses": WAREHOUSES, "config": CHANNEL_CONFIG, "pricing": all_data}, f, ensure_ascii=False)
     
-    # 2. 生成 index.html (解决 cp 错误)
     with open('public/index.html', 'w', encoding='utf-8') as f:
         f.write(HTML_TEMPLATE)
         
