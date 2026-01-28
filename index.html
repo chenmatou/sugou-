@@ -117,13 +117,11 @@
                     let rates = periodData.rates;
                     
                     if (periodData.type === 'xlmiles') {
-                        // XLmiles 简化逻辑：匹配重量，查找该 Zone 的价格
                         const candidates = rates.filter(r => this.weight <= r.weight && r.prices[`zone${this.zone}`]);
-                        // 取第一个符合条件（通常是最便宜的档位，或者按AH/OS逻辑排序）
                         if (candidates.length > 0) basePrice = candidates[0].prices[`zone${this.zone}`];
                     } else if (periodData.type === 'split') {
                         const table = this.addressType === 'residential' ? rates.residential : rates.commercial;
-                        const match = table.find(r => r.weight >= this.weight); // 简单查找
+                        const match = table.find(r => r.weight >= this.weight);
                         if (match && match.prices[`zone${this.zone}`]) basePrice = match.prices[`zone${this.zone}`];
                     } else {
                         const match = rates.find(r => r.weight >= this.weight);
