@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SureGo 运费计算器 (2025新年版)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div id="app" class="max-w-4xl mx-auto p-4">
+        <header class="mb-6 text-center">
+            <h1 class="text-3xl font-bold text-blue-800">SureGo 运费计算器</h1>
+            <p class="text-gray-500 text-sm mt-1">更新时间：2025新年版 | 含最新燃油折扣</p>
+        </header>
+
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+            
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">发货仓库</label>
+                <select v-model="selectedWarehouse" @change="updateAvailableChannels" class="w-full border-gray-300 rounded-md shadow-sm border p-2">
+                    <option value="">请选择仓库...</option>
+                    <option v-for="(info, code) in warehouses" :key="code" :value="code">
+                        {{ info.name }}
+                    </option>
+                </select>
+                <p class="text-xs text-gray-400 mt-1" v-if="selectedWarehouse">
+                    区域: {{ warehouses[selectedWarehouse].region }}
+                </p>
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">物流渠道</label>
+                <select v-model="selectedChannel" class="w-full border-gray-300 rounded-md shadow-sm border p-2" :disabled="!selectedWarehouse">
+                    <option value="">请选择渠道...</option>
+                    <option v-for="ch in availableChannels" :key="ch" :value="ch">
+                        {{ ch }}
+                    </option>
+                </select>
+            </div>
+
+            <div class="col-span-1 md:col-span-2 grid grid-cols-2 md:grid-cols-4 gap-4 bg-gray-50 p-3 rounded">
+                <div>
+                    <label class="block text-xs font-bold text-gray-500">重量 (LB)</label>
+                    <input type="number" v-model.number="weight" class="w-full border p-1 rounded" step="0.1" min="0">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-gray-500">分区 (Zone)</label>
+                    <select v-model.number="zone" class="w-full border p-1 rounded">
+                        <option v-for="z in 9" :key="z" :value="z">Zone {{ z }}</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-gray-500">地址类型</label>
+                    <select v-model="addressType" class="w-full border p-1 rounded">
+                        <option value="residential">住宅 (Residential)</option>
+                        <option value="commercial">商业 (Commercial)</option>
+                    </select>
+                </div>
+                <div class="flex items-center pt-4">
+                    <input type="checkbox" v-model="needSignature" id="sig" class="mr-2">
+                    <label for="sig" class="text-sm">需要签名 (Signature)</label>
+                </div>
+            </div>
+            
+            <div class="col-span-1 md:col-span-2">
+                <label class="block text-xs text-gray-400">价格周期</label>
+                <div class="flex space-x-4">
+                    <label v-for="t in ['T0','T1','T2','T3']" :key="t" class="inline-flex items-center cursor-pointer">
+                        <input type="radio" v-model="timePeriod" :value="t" class="text-blue-600">
+                        <span class="ml-1 text-sm">{{ t }}</span>
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <div v-if="result" class="bg-blue-50 border border-blue-200 rounded-lg p-6 shadow-sm">
+            <div class="flex justify-between items-end mb-4 border-b border-blue-200 pb-2">
+                <h2 class="text-xl font-bold text-blue-900">预估运费: <span class="text-3xl text-red-600">${{ result.total.toFixed(2) }}</span></h2>
+                <div class="text-right text-xs text-gray-500">
+                    <div v-if="result.fuelDiscountApplied" class="text-green-600 font-bold">★ 已应用燃油85折</div>
+                    <div>基础燃油费率: {{ (result.fuelRate * 100).toFixed(2) }}%</div>
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-2 gap-y-2 text-sm text-gray-700">
+                <div class="flex justify-between"><span>基础运费 (Base):</span> <span>${{ result.base.toFixed(2) }}</span></div>
+                <div class="flex justify-between" v-if="result.resFee > 0"><span>住宅费 (Res):</span> <span>${{ result.resFee.toFixed(2) }}</span></div>
+                <div class="flex justify-between" v-if="result.sigFee > 0"><span>签名费 (Sig):</span> <span>${{ result.sigFee.toFixed(2) }}</span></div>
+                <div class="flex justify-between text-blue-600"><span>燃油费 (Fuel):</span> <span>${{ result.fuelCost.toFixed(2) }}</span></div>
+                <div class="flex justify-between text-gray-400 text-xs mt-2 col-span-2 pt-2 border-t">
+                    <span>*计算公式: (Base + Fees) * (1 + FuelRate)</span>
+                </div>
+            </div>
+        </div>
+
+        <div v-else-if="selectedChannel && weight > 0" class="text-center text-gray-400 py-8">
+            未找到对应重量或分区的报价，请检查输入。
+        </div>
+
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    warehouses: {},
+                    config: {},
+                    pricing: {},
+                    selectedWarehouse: '',
+                    selectedChannel: '',
+                    availableChannels: [],
+                    weight: 1,
+                    zone: 2,
+                    addressType: 'residential',
+                    needSignature: false,
+                    timePeriod: 'T0'
+                }
+            },
+            async mounted() {
+                try {
+                    const res = await fetch('data.json');
+                    const data = await res.json();
+                    this.warehouses = data.warehouses;
+                    this.config = data.config;
+                    this.pricing = data.pricing;
+                } catch (e) {
+                    console.error("Load failed", e);
+                }
+            },
+            computed: {
+                result() {
+                    if (!this.selectedChannel || !this.selectedWarehouse || !this.pricing[this.timePeriod]) return null;
+                    
+                    const periodData = this.pricing[this.timePeriod].channels[this.selectedChannel];
+                    if (!periodData) return null;
+
+                    // 1. 获取基础运费
+                    let basePrice = 0;
+                    let rates = periodData.rates;
+                    
+                    // 特殊处理 XLmiles
+                    if (periodData.type === 'xlmiles') {
+                        // 简单逻辑：找到第一个满足重量且有该Zone报价的区间
+                        // 实际上 XLmiles 有 AH/OS/OM 区分，这里做简化匹配
+                        // 假设用户只输入重量，我们自动匹配合适的挡位
+                        // 真实逻辑应该让用户选服务类型，或者根据重量自动推断。
+                        // 这里：取所有满足重量条件的，最贵的一个（或第一个）作为展示
+                        const candidates = rates.filter(r => this.weight <= r.weight && r.prices[`zone${this.zone}`]);
+                        if (candidates.length > 0) {
+                            basePrice = candidates[0].prices[`zone${this.zone}`];
+                        }
+                    } else if (periodData.type === 'split') {
+                        // 商业/住宅
+                        const table = this.addressType === 'residential' ? rates.residential : rates.commercial;
+                        const match = table.find(r => this.weight <= r.weight && r.prices[`zone${this.zone}`]); // 向上取整查找
+                        // 多数表格是精确重量，这里做一个简单的 ceil 查找逻辑
+                        // 如果找不到精确的，找比它大的最小的
+                        // 重新查找逻辑：
+                        let bestMatch = null;
+                        for (let r of table) {
+                            if (r.weight >= this.weight) {
+                                if (!bestMatch || r.weight < bestMatch.weight) {
+                                    bestMatch = r;
+                                }
+                            }
+                        }
+                        if (bestMatch && bestMatch.prices[`zone${this.zone}`]) {
+                            basePrice = bestMatch.prices[`zone${this.zone}`];
+                        } else {
+                            // 尝试直接找 exact match (有些表是 1, 2, 3...)
+                            const exact = table.find(r => Math.abs(r.weight - this.weight) < 0.1);
+                            if (exact && exact.prices[`zone${this.zone}`]) basePrice = exact.prices[`zone${this.zone}`];
+                        }
+                    } else {
+                        // 标准
+                        const table = rates;
+                        // 类似查找
+                        let bestMatch = null;
+                        for (let r of table) {
+                            if (r.weight >= this.weight) {
+                                if (!bestMatch || r.weight < bestMatch.weight) {
+                                    bestMatch = r;
+                                }
+                            }
+                        }
+                        if (bestMatch && bestMatch.prices[`zone${this.zone}`]) {
+                            basePrice = bestMatch.prices[`zone${this.zone}`];
+                        }
+                    }
+
+                    if (basePrice === 0) return null;
+
+                    // 2. 杂费
+                    let resFee = 0;
+                    if (this.addressType === 'residential') {
+                        resFee = periodData.fees.res || 0;
+                    }
+                    let sigFee = this.needSignature ? (periodData.fees.sig || 0) : 0;
+
+                    // 3. USPS取消旺季 -> 已在后台处理，不需额外代码，除非有单独旺季字段
+
+                    // 4. 计算
+                    const subtotal = basePrice + resFee + sigFee;
+                    const fuelRate = periodData.fuel_rate;
+                    const fuelCost = subtotal * fuelRate;
+                    const total = subtotal + fuelCost;
+
+                    return {
+                        base: basePrice,
+                        resFee: resFee,
+                        sigFee: sigFee,
+                        fuelRate: fuelRate,
+                        fuelCost: fuelCost,
+                        total: total,
+                        fuelDiscountApplied: this.config[this.selectedChannel].fuel_discount < 1
+                    };
+                }
+            },
+            methods: {
+                updateAvailableChannels() {
+                    this.selectedChannel = '';
+                    if (!this.selectedWarehouse) {
+                        this.availableChannels = [];
+                        return;
+                    }
+                    // 筛选 wh 列表包含 selectedWarehouse 的渠道
+                    this.availableChannels = Object.keys(this.config).filter(key => {
+                        return this.config[key].wh.includes(this.selectedWarehouse);
+                    });
+                }
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
