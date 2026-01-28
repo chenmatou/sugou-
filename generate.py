@@ -1,410 +1,576 @@
 import pandas as pd
 import json
-import os
 import re
+import os
+import warnings
+from datetime import datetime
 
-# ================= 1. 基础配置 =================
-WAREHOUSES = {
-    "60632": {"name": "SureGo美中芝加哥-60632仓", "region": "CENTRAL"},
+# 忽略 Excel 样式警告
+warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
+
+# ==========================================
+# 1. 全局配置 (2026 新年调价严谨版)
+# ==========================================
+DATA_DIR = "data"
+OUTPUT_DIR = "public"
+
+TIER_FILES = {
+    "T0": "T0.xlsx", "T1": "T1.xlsx", "T2": "T2.xlsx", "T3": "T3.xlsx"
+}
+
+# 2) 仓库清单配置
+WAREHOUSE_CONFIG = {
     "91730": {"name": "SureGo美西库卡蒙格-91730新仓", "region": "WEST"},
     "91752": {"name": "SureGo美西米拉罗马-91752仓", "region": "WEST"},
+    "60632": {"name": "SureGo美中芝加哥-60632仓", "region": "CENTRAL"},
+    "63461": {"name": "SureGo退货检测-美中密苏里63461退货仓", "region": "CENTRAL"},
     "08691": {"name": "SureGo美东新泽西-08691仓", "region": "EAST"},
     "06801": {"name": "SureGo美东贝塞尔-06801仓", "region": "EAST"},
     "11791": {"name": "SureGo美东长岛-11791仓", "region": "EAST"},
-    "07032": {"name": "SureGo美东新泽西-07032仓", "region": "EAST"},
-    "63461": {"name": "SureGo退货检测-美中密苏里63461退货仓", "region": "CENTRAL"}
+    "07032": {"name": "SureGo美东新泽西-07032仓", "region": "EAST"}
 }
 
-# 渠道配置
-CHANNEL_CONFIG = {
+# 3) 渠道详细配置
+# split_mode: 'left'/'right' 用于处理同一张 Sheet 左右两边不同渠道的情况
+# fuel_discount: 0.85 表示燃油费 85 折
+# res_fee / sig_fee: 强制覆盖的附加费金额 (单位: 美元)
+CHANNEL_MAP = {
     "GOFO-报价": {
-        "type": "standard", 
-        "wh": ["91730", "60632"], 
-        "fuel_discount": 1.0,
-        "sheet_keyword": "GOFO-报价",
-        "loc": {"zone_start_col": 2, "weight_col": 0, "header_row": 2}
+        "keywords": ["GOFO", "报价"], 
+        "exclude": ["MT", "UNIUNI", "大件"],
+        "allow_wh": ["91730", "60632", "63461"],
+        "res_fee": 0, "sig_fee": 0, "fuel_discount": 1.0
     },
-    "GOFO、UNIUNI-MT-报价": {
-        "type": "standard", 
-        "wh": ["91730", "60632"], 
-        "fuel_discount": 1.0,
-        "sheet_keyword": "GOFO、UNIUNI-MT-报价",
-        "loc": {"zone_start_col": 2, "weight_col": 0, "header_row": 2}
+    "GOFO-MT-报价": {
+        "keywords": ["GOFO", "UNIUNI", "MT"],
+        "split_mode": "left",  # 提取 Sheet 左半部分
+        "allow_wh": ["91730", "60632", "63461"],
+        "res_fee": 0, "sig_fee": 0, "fuel_discount": 1.0
+    },
+    "UNIUNI-MT-报价": {
+        "keywords": ["GOFO", "UNIUNI", "MT"],
+        "split_mode": "right", # 提取 Sheet 右半部分
+        "allow_wh": ["91730", "60632", "63461"],
+        "res_fee": 0, "sig_fee": 0, "fuel_discount": 1.0
     },
     "USPS-YSD-报价": {
-        "type": "standard", 
-        "wh": ["91730", "60632"], 
-        "fuel_discount": 1.0,
-        "sheet_keyword": "USPS-YSD-报价",
-        "loc": {"zone_start_col": 3, "weight_col": 1, "header_row": 3}
-    },
-    "FedEx-ECO-MT报价": {
-        "type": "standard", 
-        "wh": ["91730", "60632", "08691"], 
-        "fuel_discount": 1.0,
-        "sheet_keyword": "FedEx-ECO-MT报价",
-        "loc": {"zone_start_col": 2, "weight_col": 0, "header_row": 2}
+        "keywords": ["USPS", "YSD"],
+        "allow_wh": ["91730", "60632", "63461"],
+        "res_fee": 0, "sig_fee": 0, "fuel_discount": 1.0, 
+        "no_peak": True # 取消旺季
     },
     "FedEx-632-MT-报价": {
-        "type": "split", 
-        "wh": ["91730", "60632", "08691", "06801", "11791", "07032"], 
-        "fuel_discount": 0.85, 
-        "sheet_keyword": "FedEx-632-MT-报价",
-        "loc": {"res_zone_start": 2, "res_weight": 0, "com_zone_start": 12, "com_weight": 10, "header_row": 2}
+        "keywords": ["632"],
+        "allow_wh": ["91730", "60632", "08691", "06801", "11791", "07032"],
+        "res_fee": 2.61, "sig_fee": 4.37, "fuel_discount": 0.85
     },
     "FedEx-MT-超大包裹-报价": {
-        "type": "split", 
-        "wh": ["91730", "60632", "08691", "06801", "11791", "07032"], 
-        "fuel_discount": 0.85, 
-        "sheet_keyword": "FedEx-MT-超大包裹-报价",
-        "loc": {"res_zone_start": 2, "res_weight": 0, "com_zone_start": 12, "com_weight": 10, "header_row": 2}
+        "keywords": ["超大包裹"],
+        "allow_wh": ["91730", "60632", "08691", "06801", "11791", "07032"],
+        "res_fee": 2.61, "sig_fee": 4.37, "fuel_discount": 0.85
+    },
+    "FedEx-ECO-MT报价": {
+        "keywords": ["ECO", "MT"],
+        "allow_wh": ["91730", "60632", "08691", "06801", "11791", "07032"],
+        "res_fee": 0, "sig_fee": 0, "fuel_discount": 1.0
     },
     "FedEx-MT-危险品-报价": {
-        "type": "split", 
-        "wh": ["60632", "08691", "06801", "11791", "07032"], 
-        "fuel_discount": 1.0,
-        "sheet_keyword": "FedEx-MT-危险品-报价",
-        "loc": {"res_zone_start": 2, "res_weight": 0, "com_zone_start": 12, "com_weight": 10, "header_row": 2}
+        "keywords": ["危险品"],
+        "allow_wh": ["60632", "08691", "06801", "11791", "07032"],
+        "res_fee": 3.32, "sig_fee": 9.71, "fuel_discount": 1.0
     },
     "GOFO大件-MT-报价": {
-        "type": "split", 
-        "wh": ["91730", "08691", "06801", "11791", "07032"], 
-        "fuel_discount": 1.0,
-        "sheet_keyword": "GOFO大件-MT-报价",
-        "loc": {"res_zone_start": 2, "res_weight": 0, "com_zone_start": 12, "com_weight": 10, "header_row": 2}
+        "keywords": ["GOFO大件", "MT"],
+        "allow_wh": ["91730", "08691", "06801", "11791", "07032"],
+        "res_fee": 2.93, "sig_fee": 0, "fuel_discount": 1.0
     },
     "XLmiles-报价": {
-        "type": "xlmiles",
-        "wh": ["91730"], 
-        "fuel_discount": 1.0,
-        "sheet_keyword": "XLmiles-报价"
+        "keywords": ["XLmiles"],
+        "allow_wh": ["91730"],
+        "res_fee": 0, "sig_fee": 10.20, "fuel_discount": 1.0
     }
 }
 
-FEES_OVERRIDE = {
-    "FedEx-632-MT-报价":      {"res": 2.61, "sig": 4.37},
-    "FedEx-MT-超大包裹-报价":  {"res": 2.61, "sig": 4.37},
-    "FedEx-MT-危险品-报价":    {"res": 3.32, "sig": 9.71},
-    "GOFO大件-MT-报价":        {"res": 2.93, "sig": 0}, 
-    "XLmiles-报价":           {"res": 0,    "sig": 10.20}
-}
-
-# HTML 模板 (直接内嵌)
-HTML_TEMPLATE = """
+# ==========================================
+# 2. 前端模板 (嵌入式 HTML/JS)
+# ==========================================
+HTML_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SureGo 运费计算器</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <title>SureGo 报价计算器 (2026新年版)</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        :root { --sg-blue: #0d6efd; --sg-dark: #212529; }
+        body { background-color: #f0f2f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+        .header-bar { background: var(--sg-dark); color: white; padding: 15px 0; border-bottom: 4px solid var(--sg-blue); margin-bottom: 20px; }
+        .card { border: none; box-shadow: 0 2px 8px rgba(0,0,0,0.05); border-radius: 10px; }
+        .card-header { background: #fff; border-bottom: 1px solid #eee; font-weight: 700; color: #444; padding: 15px 20px; border-radius: 10px 10px 0 0 !important; }
+        .price-val { color: var(--sg-blue); font-weight: 800; font-size: 1.2rem; }
+        .badge-tier { font-size: 0.9rem; padding: 5px 10px; }
+        .fuel-tag { font-size: 0.7rem; background: #e3f2fd; color: #0d6efd; padding: 2px 6px; border-radius: 4px; margin-left: 5px; }
+        .table-hover tbody tr:hover { background-color: #f8fbff; }
+    </style>
 </head>
-<body class="bg-gray-50 min-h-screen">
-    <div id="app" class="max-w-4xl mx-auto p-4">
-        <header class="mb-6 text-center">
-            <h1 class="text-3xl font-bold text-blue-800">SureGo 运费计算器</h1>
-            <p class="text-gray-500 text-sm mt-1">2025新年版 | 含燃油85折优惠</p>
-        </header>
+<body>
 
-        <div class="bg-white rounded-lg shadow-md p-6 mb-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">发货仓库</label>
-                <select v-model="selectedWarehouse" @change="updateAvailableChannels" class="w-full border-gray-300 rounded-md shadow-sm border p-2">
-                    <option value="">请选择仓库...</option>
-                    <option v-for="(info, code) in warehouses" :key="code" :value="code">
-                        {{ info.name }}
-                    </option>
-                </select>
-                <p class="text-xs text-gray-400 mt-1" v-if="selectedWarehouse">
-                    区域: {{ warehouses[selectedWarehouse].region }}
-                </p>
-            </div>
-
-            <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">物流渠道</label>
-                <select v-model="selectedChannel" class="w-full border-gray-300 rounded-md shadow-sm border p-2" :disabled="!selectedWarehouse">
-                    <option value="">请选择渠道...</option>
-                    <option v-for="ch in availableChannels" :key="ch" :value="ch">
-                        {{ ch }}
-                    </option>
-                </select>
-            </div>
-
-            <div class="col-span-1 md:col-span-2 grid grid-cols-2 md:grid-cols-4 gap-4 bg-gray-50 p-3 rounded">
-                <div>
-                    <label class="block text-xs font-bold text-gray-500">重量 (LB)</label>
-                    <input type="number" v-model.number="weight" class="w-full border p-1 rounded" step="0.1" min="0">
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-gray-500">分区 (Zone)</label>
-                    <select v-model.number="zone" class="w-full border p-1 rounded">
-                        <option v-for="z in 9" :key="z" :value="z">Zone {{ z }}</option>
-                    </select>
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-gray-500">地址类型</label>
-                    <select v-model="addressType" class="w-full border p-1 rounded">
-                        <option value="residential">住宅 (Residential)</option>
-                        <option value="commercial">商业 (Commercial)</option>
-                    </select>
-                </div>
-                <div class="flex items-center pt-4">
-                    <input type="checkbox" v-model="needSignature" id="sig" class="mr-2">
-                    <label for="sig" class="text-sm">需要签名</label>
-                </div>
-            </div>
-            
-            <div class="col-span-1 md:col-span-2">
-                <label class="block text-xs text-gray-400">价格周期</label>
-                <div class="flex space-x-4">
-                    <label v-for="t in ['T0','T1','T2','T3']" :key="t" class="inline-flex items-center cursor-pointer">
-                        <input type="radio" v-model="timePeriod" :value="t" class="text-blue-600">
-                        <span class="ml-1 text-sm">{{ t }}</span>
-                    </label>
-                </div>
-            </div>
+<div class="header-bar">
+    <div class="container d-flex justify-content-between align-items-center">
+        <div>
+            <h4 class="m-0 fw-bold">📦 SureGo 报价助手</h4>
+            <div class="small opacity-75">V2026.1 | 新年调价版 | 燃油85折适配</div>
         </div>
-
-        <div v-if="result" class="bg-blue-50 border border-blue-200 rounded-lg p-6 shadow-sm">
-            <div class="flex justify-between items-end mb-4 border-b border-blue-200 pb-2">
-                <h2 class="text-xl font-bold text-blue-900">预估运费: <span class="text-3xl text-red-600">${{ result.total.toFixed(2) }}</span></h2>
-                <div class="text-right text-xs text-gray-500">
-                    <div v-if="result.fuelDiscountApplied" class="text-green-600 font-bold">★ 已应用燃油85折</div>
-                    <div>应用燃油费率: {{ (result.fuelRate * 100).toFixed(2) }}%</div>
-                </div>
-            </div>
-            <div class="grid grid-cols-2 gap-y-2 text-sm text-gray-700">
-                <div class="flex justify-between"><span>基础运费:</span> <span>${{ result.base.toFixed(2) }}</span></div>
-                <div class="flex justify-between" v-if="result.resFee > 0"><span>住宅费:</span> <span>${{ result.resFee.toFixed(2) }}</span></div>
-                <div class="flex justify-between" v-if="result.sigFee > 0"><span>签名费:</span> <span>${{ result.sigFee.toFixed(2) }}</span></div>
-                <div class="flex justify-between text-blue-600"><span>燃油费:</span> <span>${{ result.fuelCost.toFixed(2) }}</span></div>
-            </div>
-        </div>
-        <div v-else-if="selectedChannel" class="text-center text-gray-400 py-8">
-            未找到对应报价，请检查重量或Zone。
+        <div class="text-end d-none d-md-block">
+            <span class="badge bg-primary">T0-T3 实时计算</span>
         </div>
     </div>
+</div>
 
-    <script>
-        const { createApp } = Vue;
-        createApp({
-            data() { return { warehouses: {}, config: {}, pricing: {}, selectedWarehouse: '', selectedChannel: '', availableChannels: [], weight: 1, zone: 2, addressType: 'residential', needSignature: false, timePeriod: 'T0' } },
-            async mounted() {
-                try {
-                    const res = await fetch('data.json');
-                    const data = await res.json();
-                    this.warehouses = data.warehouses;
-                    this.config = data.config;
-                    this.pricing = data.pricing;
-                } catch(e) { console.error(e); }
-            },
-            computed: {
-                result() {
-                    if (!this.selectedChannel || !this.selectedWarehouse || !this.pricing[this.timePeriod]) return null;
-                    const periodData = this.pricing[this.timePeriod].channels[this.selectedChannel];
-                    if (!periodData) return null;
-                    
-                    let basePrice = 0;
-                    let rates = periodData.rates;
-                    
-                    if (periodData.type === 'xlmiles') {
-                        const candidates = rates.filter(r => this.weight <= r.weight && r.prices[`zone${this.zone}`]);
-                        if (candidates.length > 0) basePrice = candidates[0].prices[`zone${this.zone}`];
-                    } else if (periodData.type === 'split') {
-                        const table = this.addressType === 'residential' ? rates.residential : rates.commercial;
-                        const match = table.find(r => r.weight >= this.weight);
-                        if (match && match.prices[`zone${this.zone}`]) basePrice = match.prices[`zone${this.zone}`];
-                    } else {
-                        const match = rates.find(r => r.weight >= this.weight);
-                        if (match && match.prices[`zone${this.zone}`]) basePrice = match.prices[`zone${this.zone}`];
-                    }
-                    
-                    if (!basePrice) return null;
-                    
-                    let resFee = (this.addressType === 'residential') ? (periodData.fees.res || 0) : 0;
-                    let sigFee = this.needSignature ? (periodData.fees.sig || 0) : 0;
-                    let fuelRate = periodData.fuel_rate;
-                    
-                    let subtotal = basePrice + resFee + sigFee;
-                    let fuelCost = subtotal * fuelRate;
-                    
-                    return {
-                        base: basePrice, resFee, sigFee, fuelRate, fuelCost,
-                        total: subtotal + fuelCost,
-                        fuelDiscountApplied: this.config[this.selectedChannel].fuel_discount < 1
-                    };
-                }
-            },
-            methods: {
-                updateAvailableChannels() {
-                    this.selectedChannel = '';
-                    if (!this.selectedWarehouse) { this.availableChannels = []; return; }
-                    this.availableChannels = Object.keys(this.config).filter(k => this.config[k].wh.includes(this.selectedWarehouse));
-                }
+<div class="container pb-5">
+    <div class="row g-4">
+        <div class="col-lg-4">
+            <div class="card h-100">
+                <div class="card-header">🛠️ 测算参数</div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label small fw-bold text-muted">发货仓库</label>
+                        <select class="form-select" id="whSelect"></select>
+                        <div class="form-text small text-end" id="whRegion"></div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small fw-bold text-muted">客户等级</label>
+                        <div class="btn-group w-100" role="group">
+                            <input type="radio" class="btn-check" name="tier" id="t0" value="T0"><label class="btn btn-outline-secondary" for="t0">T0</label>
+                            <input type="radio" class="btn-check" name="tier" id="t1" value="T1"><label class="btn btn-outline-secondary" for="t1">T1</label>
+                            <input type="radio" class="btn-check" name="tier" id="t2" value="T2"><label class="btn btn-outline-secondary" for="t2">T2</label>
+                            <input type="radio" class="btn-check" name="tier" id="t3" value="T3" checked><label class="btn btn-outline-secondary" for="t3">T3</label>
+                        </div>
+                    </div>
+
+                    <div class="row g-2 mb-3">
+                        <div class="col-8">
+                            <label class="form-label small fw-bold text-muted">燃油费率 (%)</label>
+                            <input type="number" class="form-control" id="fuelInput" value="16.0" step="0.1">
+                        </div>
+                        <div class="col-4 d-flex align-items-end pb-2">
+                             <span class="badge bg-light text-dark border small">指定85折</span>
+                        </div>
+                    </div>
+
+                    <div class="row g-2 mb-3">
+                        <div class="col-6">
+                            <label class="form-label small fw-bold text-muted">目的地邮编</label>
+                            <input type="text" class="form-control" id="zipCode" placeholder="5位ZIP">
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-bold text-muted">地址类型</label>
+                            <select class="form-select" id="addrType">
+                                <option value="res">🏠 住宅</option>
+                                <option value="com">🏢 商业</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-check form-switch mb-4">
+                        <input class="form-check-input" type="checkbox" id="sigToggle">
+                        <label class="form-check-label small" for="sigToggle">需要签名服务 (Signature)</label>
+                    </div>
+
+                    <div class="bg-light p-3 rounded border">
+                        <label class="form-label small fw-bold text-muted mb-2">包裹信息 (英寸/磅)</label>
+                        <div class="row g-2 mb-2">
+                            <div class="col-4"><input type="number" id="dimL" class="form-control form-control-sm" placeholder="长 L"></div>
+                            <div class="col-4"><input type="number" id="dimW" class="form-control form-control-sm" placeholder="宽 W"></div>
+                            <div class="col-4"><input type="number" id="dimH" class="form-control form-control-sm" placeholder="高 H"></div>
+                        </div>
+                        <div class="input-group input-group-sm">
+                            <span class="input-group-text">实重</span>
+                            <input type="number" id="weight" class="form-control" placeholder="LBS">
+                        </div>
+                    </div>
+
+                    <button class="btn btn-primary w-100 mt-4 py-2 fw-bold" id="btnCalc">开始计算</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-8">
+            <div class="card h-100">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span>📊 报价一览</span>
+                    <span class="badge bg-warning text-dark badge-tier" id="resTierBadge">T3</span>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-info py-2 small" id="pkgInfo">请在左侧录入数据...</div>
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle">
+                            <thead class="table-light small text-secondary">
+                                <tr>
+                                    <th width="22%">渠道</th>
+                                    <th width="8%">Zone</th>
+                                    <th width="10%">计费重</th>
+                                    <th width="15%">基础运费</th>
+                                    <th width="25%">附加费明细</th>
+                                    <th width="20%" class="text-end">总费用</th>
+                                </tr>
+                            </thead>
+                            <tbody id="resBody">
+                                <tr><td colspan="6" class="text-center py-4 text-muted">暂无结果</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="mt-3 small text-muted fst-italic border-top pt-2">
+                        * 注：FedEx-632 / 超大包裹 已应用燃油费85折。XLmiles为一口价模式。
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<footer class="text-center py-4 text-muted small">
+    &copy; 2026 SureGo Logistics | Data Generated: <span id="updateTime"></span>
+</footer>
+
+<script>
+    const DATA = __JSON_DATA__;
+    document.getElementById('updateTime').innerText = new Date().toLocaleDateString();
+
+    // 1. 初始化仓库
+    const whSelect = document.getElementById('whSelect');
+    const whRegion = document.getElementById('whRegion');
+    
+    Object.keys(DATA.warehouses).forEach(code => {
+        let opt = document.createElement('option');
+        opt.value = code;
+        opt.text = DATA.warehouses[code].name;
+        whSelect.appendChild(opt);
+    });
+    
+    whSelect.addEventListener('change', () => {
+        let r = DATA.warehouses[whSelect.value].region;
+        whRegion.innerText = `区域归属: ${r}`;
+    });
+    // 默认触发一次
+    if(whSelect.options.length > 0) whSelect.dispatchEvent(new Event('change'));
+
+    // 2. Zone 简易计算逻辑 (基于区域)
+    function calcZone(destZip, originZip) {
+        if(!destZip || destZip.length < 3) return 8;
+        let d = parseInt(destZip.substring(0,3));
+        let originRegion = DATA.warehouses[originZip].region;
+
+        // 简化的逻辑：
+        // 美西仓(9开头) -> 美西ZIP(9开头) = Zone2-4, 否则 Zone8
+        if(originRegion === 'WEST') {
+            if(d >= 900 && d <= 935) return 2;
+            if(d >= 936 && d <= 994) return 4;
+            return 8;
+        }
+        // 美东仓 -> 美东ZIP(0-1开头) = Zone2-4
+        if(originRegion === 'EAST') {
+            if(d >= 70 && d <= 89) return 2;
+            if(d >= 100 && d <= 199) return 4;
+            return 8;
+        }
+        // 美中
+        if(originRegion === 'CENTRAL') {
+             if(d >= 600 && d <= 629) return 2;
+             return 6;
+        }
+        return 8; // 默认 Zone 8
+    }
+
+    // 3. 核心计算
+    document.getElementById('btnCalc').onclick = () => {
+        const whCode = whSelect.value;
+        const tier = document.querySelector('input[name="tier"]:checked').value;
+        const fuelRateInput = parseFloat(document.getElementById('fuelInput').value) || 0;
+        const zip = document.getElementById('zipCode').value.trim();
+        const isRes = document.getElementById('addrType').value === 'res';
+        const sigOn = document.getElementById('sigToggle').checked;
+        
+        const pkg = {
+            L: parseFloat(document.getElementById('dimL').value)||0,
+            W: parseFloat(document.getElementById('dimW').value)||0,
+            H: parseFloat(document.getElementById('dimH').value)||0,
+            Wt: parseFloat(document.getElementById('weight').value)||0
+        };
+
+        document.getElementById('resTierBadge').innerText = tier;
+        let vol = pkg.L * pkg.W * pkg.H;
+        let dimWt = vol / 222; // 默认除222
+        document.getElementById('pkgInfo').innerHTML = 
+            `<b>当前包裹:</b> ${pkg.L}x${pkg.W}x${pkg.H}" | 实重:${pkg.Wt} lb | 体积重:${dimWt.toFixed(2)} lb`;
+
+        const tbody = document.getElementById('resBody');
+        tbody.innerHTML = '';
+        let hasResult = false;
+
+        // 遍历所有渠道
+        Object.keys(DATA.channels).forEach(chName => {
+            const conf = DATA.channels[chName];
+            
+            // 1. 仓库过滤
+            if(!conf.allow_wh.includes(whCode)) return;
+
+            // 2. 计费重 (XLmiles除外)
+            let finalWt = Math.max(pkg.Wt, dimWt);
+            if(!chName.includes("XLmiles") && finalWt > 1) {
+                finalWt = Math.ceil(finalWt);
             }
-        }).mount('#app');
-    </script>
+
+            // 3. Zone
+            let zone = calcZone(zip, whCode);
+
+            // 4. 查表获取基础运费
+            let priceTable = (DATA.tiers[tier][chName] || {}).prices || [];
+            let row = priceTable.find(r => r.w >= finalWt - 0.001);
+            
+            if(!row) return; // 没找到对应重量，跳过
+
+            // 优先找对应Zone，没有则找最大Zone(8)兜底
+            let basePrice = row[zone] || row[8] || 0;
+            if(basePrice <= 0) return;
+
+            hasResult = true;
+
+            // 5. 附加费计算
+            let surcharges = 0;
+            let details = [];
+
+            // 住宅费 (硬编码金额)
+            if(isRes && conf.res_fee > 0) {
+                surcharges += conf.res_fee;
+                details.push(`住宅 $${conf.res_fee}`);
+            }
+
+            // 签名费 (硬编码金额)
+            if(sigOn && conf.sig_fee > 0) {
+                surcharges += conf.sig_fee;
+                details.push(`签名 $${conf.sig_fee}`);
+            }
+
+            // 燃油费 (含85折逻辑)
+            if(chName.includes("FedEx") || chName.includes("GOFO")) {
+                let appliedRate = fuelRateInput / 100;
+                let tag = "";
+                
+                // 应用折扣
+                if(conf.fuel_discount < 1.0) {
+                    appliedRate = appliedRate * conf.fuel_discount;
+                    tag = "(85折)";
+                }
+
+                // 燃油基数 = 基础费 + 住宅 + 签名
+                let fuelAmt = (basePrice + surcharges) * appliedRate;
+                surcharges += fuelAmt;
+                details.push(`燃油${tag} $${fuelAmt.toFixed(2)}`);
+            }
+
+            let total = basePrice + surcharges;
+
+            // 渲染行
+            tbody.innerHTML += `
+                <tr>
+                    <td class="fw-bold text-nowrap">${chName}</td>
+                    <td><span class="badge bg-light text-dark border">Z${zone}</span></td>
+                    <td>${finalWt} lb</td>
+                    <td>$${basePrice.toFixed(2)}</td>
+                    <td class="small text-muted" style="line-height:1.2">${details.join('<br>') || '-'}</td>
+                    <td class="text-end price-val">$${total.toFixed(2)}</td>
+                </tr>
+            `;
+        });
+
+        if(!hasResult) {
+            tbody.innerHTML = `<tr><td colspan="6" class="text-center py-4 text-danger">无可用报价 (可能超重/超尺寸/仓库不支持)</td></tr>`;
+        }
+    };
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
 """
 
-# ================= 2. 逻辑函数 =================
+# ==========================================
+# 3. 后端处理逻辑
+# ==========================================
 
-def safe_float(val):
+def clean_money(val):
+    """ 清洗金额字符串 """
+    if pd.isna(val): return 0.0
+    s = str(val).replace('$', '').replace(',', '').strip()
     try:
-        # 核心修正：显式处理空值
-        if pd.isna(val) or val is None: return 0.0
-        
-        if isinstance(val, str):
-            val = val.replace('$', '').replace(',', '').strip()
-            if not val: return 0.0
-        
-        f = float(val)
-        if pd.isna(f): return 0.0
-        return f
+        return float(s)
     except:
         return 0.0
 
-def get_sheet_by_keyword(excel_path, keyword):
+def find_sheet(excel_path, keywords, exclude_keywords=None):
+    """ 根据关键词匹配 Excel Sheet """
     try:
-        csv_name = f"{excel_path} - {keyword}.csv"
-        if os.path.exists(csv_name):
-            return pd.read_csv(csv_name, header=None)
-        if os.path.exists(excel_path):
-            xls = pd.ExcelFile(excel_path)
-            for sheet in xls.sheet_names:
-                if keyword in sheet:
-                    return pd.read_excel(excel_path, sheet_name=sheet, header=None)
+        xl = pd.ExcelFile(excel_path)
+        for sheet in xl.sheet_names:
+            s_upper = sheet.upper().replace(" ", "")
+            # 必须包含所有关键词
+            if not all(k.upper() in s_upper for k in keywords):
+                continue
+            # 不能包含排除词
+            if exclude_keywords and any(e.upper() in s_upper for e in exclude_keywords):
+                continue
+            return pd.read_excel(xl, sheet_name=sheet, header=None)
     except Exception as e:
-        print(f"Error reading {keyword}: {e}")
+        print(f"Error reading {excel_path}: {e}")
     return None
 
-def extract_fuel(df, channel_name):
-    """智能搜索燃油费率"""
-    fuel = 0.0
-    found = False
+def extract_prices(df, split_mode=None):
+    """ 
+    提取价格表 
+    split_mode: 'left' (取左半边), 'right' (取右半边), None (全表)
+    """
+    if df is None: return []
     
-    # 扩大搜索范围，并增强容错
-    for r in range(min(5, len(df))):
-        for c in range(min(30, df.shape[1])):
-            try:
-                val = str(df.iloc[r, c])
-                if "燃油" in val or "Fuel" in val:
-                    # 尝试取右侧单元格
-                    candidate = df.iloc[r, c+1]
-                    f_val = safe_float(candidate)
-                    if f_val > 0:
-                        fuel = f_val
-                        found = True
-                        break
-            except: pass
-        if found: break
+    # 1. 确定扫描范围
+    total_cols = df.shape[1]
+    col_start = 0
+    col_end = total_cols
     
-    # 默认值兜底 (如果文件里没写或读取失败，给一个默认值防止NaN)
-    if fuel == 0 and "FedEx" in channel_name:
-        fuel = 0.16 # 默认16%
-    
-    # 百分比修正
-    if fuel > 1: fuel = fuel / 100.0
-    
-    return fuel
+    if split_mode == 'left':
+        col_end = total_cols // 2 + 2 # 左半区 (多预留2列防溢出)
+    elif split_mode == 'right':
+        col_start = total_cols // 2 - 2 # 右半区 (多预留2列)
 
-def parse_standard_table(df, loc):
-    rates = []
-    header_row = loc['header_row']
-    start_col = loc['zone_start_col']
-    weight_col = loc['weight_col']
+    # 2. 寻找表头行 (必须包含 Weight 和 Zone)
+    header_row_idx = -1
+    zone_map = {} # {'Zone~1': col_idx, ...}
+    weight_col_idx = -1
     
-    for r in range(header_row + 1, len(df)):
+    # 扫描前 10 行
+    for r in range(10):
+        # 获取当前行在指定范围内的内容
+        row_vals = [str(x).lower() for x in df.iloc[r, col_start:col_end].values]
+        
+        # 判断是否是表头
+        has_weight = any('weight' in x or '重量' in x for x in row_vals)
+        has_zone = any('zone' in x for x in row_vals)
+        
+        if has_weight and has_zone:
+            header_row_idx = r
+            break
+    
+    if header_row_idx == -1: return []
+
+    # 3. 解析列索引
+    row_data = df.iloc[header_row_idx]
+    
+    for c in range(col_start, col_end):
+        if c >= total_cols: break
+        val = str(row_data[c]).strip()
+        val_lower = val.lower()
+        
+        # 找重量列
+        if ('weight' in val_lower or '重量' in val_lower) and weight_col_idx == -1:
+            weight_col_idx = c
+        
+        # 找 Zone 列 (支持 Zone~2, Zone 2, Zone-2)
+        m = re.search(r'zone\D*(\d+)', val_lower)
+        if m:
+            z_num = int(m.group(1))
+            zone_map[z_num] = c
+
+    if weight_col_idx == -1 or not zone_map:
+        return []
+
+    # 4. 提取数据行
+    prices = []
+    for r in range(header_row_idx + 1, len(df)):
         try:
-            row_data = df.iloc[r]
-            w_str = str(row_data[weight_col]).upper()
-            if "OZ" in w_str: weight = safe_float(w_str.replace("OZ", "")) / 16.0
-            else: weight = safe_float(w_str.replace("LB", "").replace("LBS", ""))
+            # 读取重量
+            w_raw = df.iloc[r, weight_col_idx]
+            w_str = str(w_raw).lower().strip()
             
-            if weight == 0: continue
+            # 处理 "1 oz", "0.5", "10 LB"
+            weight_val = 0.0
+            nums = re.findall(r'[\d\.]+', w_str)
+            if not nums: continue
             
-            row_rates = {}
-            header_txt = str(df.iloc[header_row, start_col])
-            start_z_num = 2 if "2" in header_txt else 1
-            
-            for z in range(1, 10):
-                if z < start_z_num: continue
-                col_idx = start_col + (z - start_z_num)
-                if col_idx < len(row_data):
-                    p = safe_float(row_data[col_idx])
-                    if p > 0: row_rates[f"zone{z}"] = p
-            
-            if row_rates: rates.append({"weight": weight, "prices": row_rates})
-        except: pass
-    return rates
+            val = float(nums[0])
+            if 'oz' in w_str:
+                weight_val = val / 16.0
+            elif 'kg' in w_str:
+                weight_val = val / 0.453592
+            else:
+                weight_val = val # 默认为 LB
 
-def parse_split_table(df, loc):
-    res = parse_standard_table(df, {"header_row":loc['header_row'], "zone_start_col":loc['res_zone_start'], "weight_col":loc['res_weight']})
-    com = parse_standard_table(df, {"header_row":loc['header_row'], "zone_start_col":loc['com_zone_start'], "weight_col":loc['com_weight']})
-    return {"residential": res, "commercial": com}
+            if weight_val <= 0: continue
 
-def parse_xlmiles(df):
-    zone_map = {3: 1, 4: 2, 5: 3, 6: 6}
-    rates = []
-    for r in range(len(df)):
-        try:
-            col2 = str(df.iloc[r, 2])
-            if "重量" in col2 and ("<" in col2 or "≤" in col2):
-                nums = re.findall(r"[-+]?\d*\.\d+|\d+", col2)
-                if nums:
-                    weight = float(nums[-1])
-                    prices = {}
-                    for c_idx, z_num in zone_map.items():
-                        p = safe_float(df.iloc[r, c_idx])
-                        if p > 0: prices[f"zone{z_num}"] = p
-                    if prices:
-                        rates.append({"weight": weight, "prices": prices})
-        except: pass
-    return rates
+            # 读取各 Zone 价格
+            row_dict = {'w': weight_val}
+            for z_num, c_idx in zone_map.items():
+                p = clean_money(df.iloc[r, c_idx])
+                if p > 0:
+                    row_dict[z_num] = p
+            
+            if len(row_dict) > 1:
+                prices.append(row_dict)
 
-# ================= 3. 主程序 =================
+        except:
+            continue
+            
+    # 按重量排序
+    prices.sort(key=lambda x: x['w'])
+    return prices
+
 def main():
-    if not os.path.exists('public'): os.makedirs('public')
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+
+    all_data = {
+        "warehouses": WAREHOUSE_CONFIG,
+        "channels": CHANNEL_MAP,
+        "tiers": {}
+    }
+
+    # 遍历 T0-T3
+    for tier, filename in TIER_FILES.items():
+        print(f"Processing {tier} ({filename})...")
+        path = os.path.join(DATA_DIR, filename)
+        if not os.path.exists(path):
+            print(f"  [Warning] {filename} not found.")
+            continue
+        
+        tier_data = {}
+        
+        # 遍历渠道
+        for ch_key, conf in CHANNEL_MAP.items():
+            # 1. 找 Sheet
+            df = find_sheet(path, conf["keywords"], conf.get("exclude"))
+            if df is None:
+                continue
+            
+            # 2. 提取价格 (处理拆表逻辑)
+            prices = extract_prices(df, split_mode=conf.get("split_mode"))
+            if prices:
+                tier_data[ch_key] = {"prices": prices}
+                print(f"    Loaded {ch_key}: {len(prices)} rows")
+        
+        all_data["tiers"][tier] = tier_data
+
+    # 生成 HTML
+    json_str = json.dumps(all_data, ensure_ascii=False)
+    # 处理可能的 NaN
+    json_str = json_str.replace("NaN", "0")
     
-    all_data = {}
-    for t in ['T0', 'T1', 'T2', 'T3']:
-        print(f"Processing {t}...")
-        t_data = {"channels": {}}
-        base_path = f"data/{t}.xlsx"
-        if not os.path.exists(base_path): base_path = f"{t}.xlsx" 
-        
-        for name, cfg in CHANNEL_CONFIG.items():
-            df = get_sheet_by_keyword(base_path, cfg['sheet_keyword'])
-            if df is None or df.empty: continue
-            
-            fuel = extract_fuel(df, name)
-            if cfg['fuel_discount'] < 1:
-                fuel_final = fuel * cfg['fuel_discount']
-                print(f"  {name}: Fuel {fuel:.4f} -> 85% Discount -> {fuel_final:.4f}")
-                fuel = fuel_final
-            
-            if cfg['type'] == 'standard': rates = parse_standard_table(df, cfg['loc'])
-            elif cfg['type'] == 'split': rates = parse_split_table(df, cfg['loc'])
-            elif cfg['type'] == 'xlmiles': rates = parse_xlmiles(df)
-            else: rates = []
-            
-            t_data["channels"][name] = {
-                "fuel_rate": fuel,
-                "rates": rates,
-                "fees": FEES_OVERRIDE.get(name, {"res":0, "sig":0}),
-                "type": cfg['type']
-            }
-        all_data[t] = t_data
-        
-    with open('public/data.json', 'w', encoding='utf-8') as f:
-        json.dump({"warehouses": WAREHOUSES, "config": CHANNEL_CONFIG, "pricing": all_data}, f, ensure_ascii=False)
+    html_content = HTML_TEMPLATE.replace("__JSON_DATA__", json_str)
     
-    with open('public/index.html', 'w', encoding='utf-8') as f:
-        f.write(HTML_TEMPLATE)
-        
-    print("Done! public/data.json and public/index.html generated.")
+    with open(os.path.join(OUTPUT_DIR, "index.html"), "w", encoding="utf-8") as f:
+        f.write(html_content)
+    
+    print("\n✅ Build Success! Public/index.html generated.")
 
 if __name__ == "__main__":
     main()
