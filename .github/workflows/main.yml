@@ -1,11 +1,8 @@
-name: Deploy Shipping Calculator
+name: Deploy Price Calculator
 
 on:
-  schedule:
-    - cron: '0 8 * * *' # 每天北京时间 16:00 运行
   push:
-    branches:
-      - main
+    branches: [ "main" ]
   workflow_dispatch:
 
 permissions:
@@ -24,15 +21,14 @@ jobs:
           python-version: '3.9'
 
       - name: Install dependencies
-        run: pip install pandas openpyxl
-
-      - name: Generate Data & HTML
         run: |
-          python generate.py
-          # 此时 public/ 目录下已有 index.html 和 data.json
+          pip install -r requirements.txt
+
+      - name: Generate Index HTML
+        run: python generate.py
 
       - name: Deploy to GitHub Pages
-        uses: JamesIves/github-pages-deploy-action@v4
+        uses: peaceiris/actions-gh-pages@v3
         with:
-          folder: public
-          branch: gh-pages
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
