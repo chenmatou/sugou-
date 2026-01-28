@@ -2,7 +2,7 @@ name: Deploy Shipping Calculator
 
 on:
   schedule:
-    - cron: '0 8 * * *' # 北京时间下午4点 (UTC 8:00)，可自行调整
+    - cron: '0 8 * * *' # 每天北京时间 16:00 运行
   push:
     branches:
       - main
@@ -15,7 +15,7 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v3
 
       - name: Set up Python
@@ -23,18 +23,13 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install Dependencies
-        run: |
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # 确保有 pandas openpyxl
-          pip install pandas openpyxl
+      - name: Install dependencies
+        run: pip install pandas openpyxl
 
-      - name: Generate Data
+      - name: Generate Data & HTML
         run: |
-          mkdir -p public
           python generate.py
-          # 确保 index.html 也在 public 下（如果源文件在根目录，复制过去）
-          cp index.html public/index.html
+          # 此时 public/ 目录下已有 index.html 和 data.json
 
       - name: Deploy to GitHub Pages
         uses: JamesIves/github-pages-deploy-action@v4
