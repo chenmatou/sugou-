@@ -9,32 +9,16 @@ from datetime import datetime
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 # ==========================================
-# 1. 全局配置 & 州名映射
+# 1. 全局配置 & 核心数据
 # ==========================================
 DATA_DIR = "data"
 OUTPUT_DIR = "public"
 
-# 文件名定义
 TIER_FILES = {
     "T0": "T0.xlsx", "T1": "T1.xlsx", "T2": "T2.xlsx", "T3": "T3.xlsx"
 }
 
-# 州名映射 (用于前端显示: 缩写 -> 中文)
-US_STATES_CN = {
-    'AL': '阿拉巴马', 'AK': '阿拉斯加', 'AZ': '亚利桑那', 'AR': '阿肯色', 'CA': '加利福尼亚',
-    'CO': '科罗拉多', 'CT': '康涅狄格', 'DE': '特拉华', 'FL': '佛罗里达', 'GA': '佐治亚',
-    'HI': '夏威夷', 'ID': '爱达荷', 'IL': '伊利诺伊', 'IN': '印第安纳', 'IA': '爱荷华',
-    'KS': '堪萨斯', 'KY': '肯塔基', 'LA': '路易斯安那', 'ME': '缅因', 'MD': '马里兰',
-    'MA': '马萨诸塞', 'MI': '密歇根', 'MN': '明尼苏达', 'MS': '密西西比', 'MO': '密苏里',
-    'MT': '蒙大拿', 'NE': '内布拉斯加', 'NV': '内华达', 'NH': '新罕布什尔', 'NJ': '新泽西',
-    'NM': '新墨西哥', 'NY': '纽约', 'NC': '北卡罗来纳', 'ND': '北达科他', 'OH': '俄亥俄',
-    'OK': '俄克拉荷马', 'OR': '俄勒冈', 'PA': '宾夕法尼亚', 'RI': '罗德岛', 'SC': '南卡罗来纳',
-    'SD': '南达科他', 'TN': '田纳西', 'TX': '德克萨斯', 'UT': '犹他', 'VT': '佛蒙特',
-    'VA': '弗吉尼亚', 'WA': '华盛顿', 'WV': '西弗吉尼亚', 'WI': '威斯康星', 'WY': '怀俄明',
-    'DC': '华盛顿特区'
-}
-
-# 仓库配置 (严格分类)
+# 仓库清单 (Code -> Info)
 WAREHOUSE_DB = {
     "60632": {"name": "SureGo美中芝加哥-60632仓", "region": "CENTRAL"},
     "91730": {"name": "SureGo美西库卡蒙格-91730新仓", "region": "WEST"},
@@ -49,7 +33,7 @@ WAREHOUSE_DB = {
 # 渠道配置
 # fuel_calc: 'manual'(前端显示输入框/自动抓取), 'none'(无燃油)
 # fuel_discount: True (燃油费打85折)
-# sheet_side: 'left'/'right' 用于同表分栏
+# zone_mode: 'gofo'(查GOFO表), 'standard'(标准距离)
 CHANNEL_CONFIG = {
     "GOFO-报价": {
         "keywords": ["GOFO", "报价"], 
@@ -57,6 +41,7 @@ CHANNEL_CONFIG = {
         "allow_wh": ["91730", "60632"], 
         "fuel_calc": "none", 
         "fuel_discount": False,
+        "zone_mode": "gofo", # 独立分区
         "fees": {"res": 0, "sig": 0} 
     },
     "GOFO-MT-报价": {
@@ -65,6 +50,7 @@ CHANNEL_CONFIG = {
         "allow_wh": ["91730", "60632"],
         "fuel_calc": "manual",
         "fuel_discount": False,
+        "zone_mode": "gofo", # 独立分区
         "fees": {"res": 0, "sig": 0}
     },
     "UNIUNI-MT-报价": {
@@ -73,6 +59,7 @@ CHANNEL_CONFIG = {
         "allow_wh": ["91730", "60632"],
         "fuel_calc": "none",
         "fuel_discount": False,
+        "zone_mode": "gofo", # 暂用GOFO分区或标准
         "fees": {"res": 0, "sig": 0}
     },
     "USPS-YSD-报价": {
@@ -80,6 +67,7 @@ CHANNEL_CONFIG = {
         "allow_wh": ["91730", "91752", "60632"], 
         "fuel_calc": "none",
         "fuel_discount": False,
+        "zone_mode": "standard",
         "fees": {"res": 0, "sig": 0},
         "no_peak": True 
     },
@@ -88,6 +76,7 @@ CHANNEL_CONFIG = {
         "allow_wh": ["91730", "91752", "60632", "08691", "06801", "11791", "07032"],
         "fuel_calc": "manual", 
         "fuel_discount": True, # 85折
+        "zone_mode": "standard",
         "fees": {"res": 2.61, "sig": 4.37}
     },
     "FedEx-MT-超大包裹-报价": {
@@ -95,6 +84,7 @@ CHANNEL_CONFIG = {
         "allow_wh": ["91730", "91752", "60632", "08691", "06801", "11791", "07032"],
         "fuel_calc": "manual",
         "fuel_discount": True, # 85折
+        "zone_mode": "standard",
         "fees": {"res": 2.61, "sig": 4.37}
     },
     "FedEx-ECO-MT报价": {
@@ -102,6 +92,7 @@ CHANNEL_CONFIG = {
         "allow_wh": ["91730", "91752", "60632", "08691", "06801", "11791", "07032"],
         "fuel_calc": "manual",
         "fuel_discount": False,
+        "zone_mode": "standard",
         "fees": {"res": 0, "sig": 0}
     },
     "FedEx-MT-危险品-报价": {
@@ -109,6 +100,7 @@ CHANNEL_CONFIG = {
         "allow_wh": ["60632", "08691", "06801", "11791", "07032"], 
         "fuel_calc": "manual",
         "fuel_discount": False,
+        "zone_mode": "standard",
         "fees": {"res": 3.32, "sig": 9.71}
     },
     "GOFO大件-MT-报价": {
@@ -116,6 +108,7 @@ CHANNEL_CONFIG = {
         "allow_wh": ["91730", "91752", "08691", "06801", "11791", "07032"], 
         "fuel_calc": "manual", 
         "fuel_discount": False,
+        "zone_mode": "gofo",
         "fees": {"res": 2.93, "sig": 0} 
     },
     "XLmiles-报价": {
@@ -123,6 +116,7 @@ CHANNEL_CONFIG = {
         "allow_wh": ["91730"], 
         "fuel_calc": "none", 
         "fuel_discount": False,
+        "zone_mode": "standard",
         "fees": {"res": 0, "sig": 10.20}
     }
 }
@@ -136,17 +130,17 @@ HTML_TEMPLATE = r"""
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>业务员报价助手 (V2026.7 完美修复版)</title>
+  <title>业务员报价助手 (V2026.8 旗舰版)</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    body { background-color: #f4f6f8; font-family: 'Microsoft YaHei', sans-serif; }
-    .header-bar { background: #2c3e50; color: #fff; padding: 15px 0; border-bottom: 4px solid #3498db; margin-bottom: 25px; }
-    .card { border: none; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-radius: 12px; }
-    .card-header { background-color: #fff; font-weight: 700; border-bottom: 1px solid #eee; padding: 15px 20px; border-radius: 12px 12px 0 0 !important; }
-    .price-main { font-size: 1.4rem; font-weight: 800; color: #e74c3c; }
-    .warn-box { background: #fff3cd; border: 1px solid #ffeeba; color: #856404; padding: 12px; border-radius: 6px; font-size: 0.85rem; margin-bottom: 15px; }
+    body { background-color: #f8f9fa; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    .header-bar { background: #212529; color: white; padding: 15px 0; border-bottom: 4px solid #0d6efd; margin-bottom: 20px; }
+    .card { border: none; box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.05); border-radius: 0.5rem; }
+    .card-header { background-color: #fff; border-bottom: 1px solid #e9ecef; font-weight: 700; }
+    .price-main { font-size: 1.4rem; font-weight: 800; color: #0d6efd; }
+    .warn-box { background: #fff3cd; border: 1px solid #ffeeba; color: #856404; padding: 15px; border-radius: 6px; font-size: 0.9rem; margin-bottom: 15px; }
     .compliance-box { background: #e9ecef; border-radius: 6px; padding: 10px; margin-top: 15px; font-size: 0.85rem; }
-    .location-tag { font-size: 0.9rem; background: #e7f1ff; color: #0d6efd; padding: 6px 12px; border-radius: 4px; display:block; margin-top:5px; border:1px solid #b6effb; font-weight:bold;}
+    .location-tag { font-size: 0.9rem; background: #e7f1ff; color: #0d6efd; padding: 5px 10px; border-radius: 4px; display:block; margin-top:5px; border:1px solid #b6effb; font-weight:bold;}
     .status-ok { color: #198754; font-weight: 700; }
     .status-err { color: #dc3545; font-weight: 700; }
   </style>
@@ -155,8 +149,8 @@ HTML_TEMPLATE = r"""
 
 <div class="header-bar">
   <div class="container d-flex justify-content-between align-items-center">
-    <div><h4 class="m-0 fw-bold">📦 业务员报价助手</h4><div class="small opacity-75">V2026.7 | 恢复邮编显示 | 修复报价读取</div></div>
-    <div class="text-end d-none d-md-block"><span class="badge bg-info text-dark">T0-T3 实时计算</span></div>
+    <div><h4 class="m-0 fw-bold">📦 业务员报价助手</h4><div class="small opacity-75">V2026.8 | GOFO独立邮编库 | FedEx文件引用</div></div>
+    <div class="text-end d-none d-md-block"><span class="badge bg-primary">T0-T3 实时计算</span></div>
   </div>
 </div>
 
@@ -186,13 +180,13 @@ HTML_TEMPLATE = r"""
             <div class="bg-light p-2 rounded border mb-3">
                 <div class="d-flex justify-content-between align-items-center mb-1">
                     <label class="form-label small fw-bold text-muted m-0">燃油费率 (%)</label>
-                    <span class="badge bg-secondary" style="font-size:0.65rem">MT系列生效</span>
+                    <span class="badge bg-secondary" style="font-size:0.65rem">MT系列</span>
                 </div>
                 <div class="input-group input-group-sm">
                     <input type="number" class="form-control fw-bold text-primary" id="fuelInput" value="16.0" step="0.01">
                     <span class="input-group-text">%</span>
                 </div>
-                <div class="form-text small text-muted" style="font-size:0.75rem">* 费率可手动修改。FedEx-632/超大件自动应用85折。</div>
+                <div class="form-text small text-muted" style="font-size:0.75rem">* FedEx-632/超大件自动应用85折。</div>
             </div>
 
             <div class="row g-2 mb-3">
@@ -248,11 +242,11 @@ HTML_TEMPLATE = r"""
         <div class="card-body">
           <div class="warn-box">
             <strong>📢 注意事项：</strong><br>
-            1. <b>燃油逻辑</b>：手动输入或自动读取；FedEx-632 / 超大包裹 <b>85折</b>；其他MT渠道全额。<br>
-            2. <b>邮编识别</b>：支持显示中英文城市/州名 (数据源自GOFO表)。<br>
-            3. <b>无报价？</b>：请检查重量是否超出限制，或切换仓库查看。<br>
-            4. <b>USPS</b>：无旺季附加费。<br>
-            5. <b>实报实销</b>：尺寸/重量/偏远等额外费用按账单补收。
+            1. <b>燃油</b>：MT渠道自动抓取费率；FedEx-632/超大包裹享受 <b>85折</b>。<br>
+            2. <b>邮编分区</b>：GOFO/UniUni使用自营邮编库；FedEx系列使用标准分区逻辑。<br>
+            3. <b>地区识别</b>：系统自动识别并显示美国城市/州 (Burlington, VT)。<br>
+            4. <b>无报价</b>：请检查包裹重量是否超过20lb(UniUni)或70lb(USPS)等限制。<br>
+            5. <b>实报实销</b>：尺寸/重量/偏远等产生的额外费用按账单补收。
           </div>
 
           <div class="alert alert-info py-2 small" id="pkgInfo">请在左侧录入数据...</div>
@@ -289,7 +283,7 @@ HTML_TEMPLATE = r"""
   const DATA = __JSON_DATA__;
   document.getElementById('updateTime').innerText = new Date().toLocaleDateString();
 
-  // --- 1. 邮编显示逻辑 (修复: 正确读取 city/state/cn_state) ---
+  // --- 1. 邮编显示逻辑 (修复: 查GOFO库) ---
   document.getElementById('zipCode').addEventListener('input', function() {
     let zip = this.value.trim();
     let display = document.getElementById('locDisplay');
@@ -297,8 +291,8 @@ HTML_TEMPLATE = r"""
     if(zip.length === 5) {
         if(DATA.zip_db && DATA.zip_db[zip]) {
             let info = DATA.zip_db[zip];
-            let cnState = DATA.us_states_cn[info.state] || info.state;
-            display.innerHTML = `<div class="location-tag">📍 ${info.city}, ${info.state} (${cnState})</div>`;
+            // 显示 City, State (ZoneRegion)
+            display.innerHTML = `<div class="location-tag">📍 ${info.city}, ${info.state} <span class="badge bg-light text-dark border ms-1">${info.region}区</span></div>`;
         } else {
             display.innerHTML = `<div class="location-tag text-muted">未知地区 (使用通用分区)</div>`;
         }
@@ -379,31 +373,48 @@ HTML_TEMPLATE = r"""
     whSelect.appendChild(opt);
   });
   
-  // 切换仓库清空结果
   whSelect.addEventListener('change', () => {
     document.getElementById('whRegion').innerText = `区域: ${DATA.warehouses[whSelect.value].region}`;
     document.getElementById('resBody').innerHTML = '<tr><td colspan="7" class="text-center py-4 text-muted">仓库已切换，请点击计算</td></tr>';
   });
   if(whSelect.options.length > 0) whSelect.dispatchEvent(new Event('change'));
 
-  // --- 5. Zone 计算 ---
-  function calcZone(destZip, originZip, chName) {
+  // --- 5. Zone 计算 (关键修改) ---
+  function calcZone(destZip, originZip, conf) {
     if(!destZip || destZip.length < 3) return 8;
     
     let d = parseInt(destZip.substring(0,3));
-    let region = DATA.warehouses[originZip].region;
+    let whRegion = DATA.warehouses[originZip].region;
 
-    if(region === 'WEST') {
+    // A. GOFO独立分区逻辑
+    if(conf.zone_mode === 'gofo') {
+        if(DATA.zip_db && DATA.zip_db[destZip]) {
+            let zipRegion = DATA.zip_db[destZip].region; // "WE", "EA", "CE"
+            
+            // 简单映射逻辑 (GOFO规则: 本区=Zone2-4, 跨区=Zone5-8)
+            // 需根据实际业务表微调，这里提供基础框架
+            if (whRegion === 'WEST' && zipRegion === 'WE') return 2;
+            if (whRegion === 'EAST' && zipRegion === 'EA') return 2;
+            if (whRegion === 'CENTRAL' && zipRegion === 'CE') return 2;
+            // 跨区
+            return 8; 
+        }
+        // 查不到邮编，默认Zone 8
+        return 8;
+    }
+
+    // B. FedEx/USPS 标准逻辑
+    if(whRegion === 'WEST') {
       if(d >= 900 && d <= 935) return 2;
       if(d >= 936 && d <= 994) return 4;
       return 8;
     }
-    if(region === 'EAST') {
+    if(whRegion === 'EAST') {
       if(d >= 70 && d <= 89) return 2;
       if(d >= 100 && d <= 199) return 4;
       return 8;
     }
-    if(region === 'CENTRAL') {
+    if(whRegion === 'CENTRAL') {
        if(d >= 600 && d <= 629) return 2;
        return 6;
     }
@@ -436,11 +447,10 @@ HTML_TEMPLATE = r"""
 
     let comp = checkCompliance(pkg);
 
-    // 遍历渠道
     Object.keys(DATA.channels).forEach(chName => {
       const conf = DATA.channels[chName];
       
-      // 1. 仓库过滤 (严格)
+      // 1. 仓库过滤
       if(!conf.allow_wh.includes(whCode)) return;
 
       // 2. 渠道阻断
@@ -453,7 +463,7 @@ HTML_TEMPLATE = r"""
       let finalWt = Math.max(pkg.Wt, dimWt);
       if(!chName.includes("XLmiles")) finalWt = Math.ceil(finalWt);
 
-      let zone = calcZone(zip, whCode, chName);
+      let zone = calcZone(zip, whCode, conf);
       let svcTag = "";
 
       if (chName.includes("XLmiles")) {
@@ -463,12 +473,10 @@ HTML_TEMPLATE = r"""
 
       // 4. 查基础运费
       let priceTable = (DATA.tiers[tier][chName] || {}).prices || [];
-      // 查找逻辑：找到第一个 "重量 >= 计费重" 的行
       let row = priceTable.find(r => r.w >= finalWt - 0.001);
       
-      if(!row) return; // 无报价
+      if(!row) return; 
 
-      // 获取Zone价格
       let basePrice = row[zone] || row[8] || 0;
       if(basePrice <= 0) return;
 
@@ -491,7 +499,7 @@ HTML_TEMPLATE = r"""
         let tag = "";
         
         if (conf.fuel_discount) {
-            rate = rate * 0.85; // 85折
+            rate = rate * 0.85; 
             tag = " (85折)";
         }
         
@@ -526,7 +534,7 @@ HTML_TEMPLATE = r"""
 """
 
 # ==========================================
-# 3. 后端处理逻辑 (Excel 读取核心)
+# 3. 后端处理逻辑
 # ==========================================
 
 def clean_num(val):
@@ -538,25 +546,22 @@ def clean_num(val):
         return 0.0
 
 def find_sheet_name(xl, keywords, exclude_keywords=None):
-    """ 根据关键词寻找 Sheet 名称 """
+    """ 查找 Sheet """
     for sheet in xl.sheet_names:
         s_upper = sheet.upper().replace(" ", "")
-        # 必须包含所有关键词
         if not all(k.upper() in s_upper for k in keywords):
             continue
-        # 必须不包含排除词
         if exclude_keywords and any(e.upper() in s_upper for e in exclude_keywords):
             continue
         return sheet
     return None
 
 def extract_fuel_rate(xl):
-    """ 扫描所有Sheet寻找'燃油附加费' """
+    """ 从MT表格中抓取燃油费率 """
     for sheet in xl.sheet_names:
-        if "MT" in sheet.upper(): # 仅在MT表里找
+        if "MT" in sheet.upper(): 
             try:
                 df = pd.read_excel(xl, sheet_name=sheet, header=None)
-                # 扫描前150行
                 for r in range(min(150, df.shape[0])):
                     for c in range(df.shape[1]):
                         val = str(df.iloc[r, c])
@@ -571,10 +576,10 @@ def extract_fuel_rate(xl):
             except: pass
     return 0.0
 
-def load_zip_db(tier_file):
+def load_gofo_zip_db(tier_file):
     """ 
-    从 T0.xlsx 的 GOFO 报价表中加载邮编库
-    修复：识别中文表头 '目的地邮编'
+    专门从 GOFO-报价 表中加载邮编库
+    兼容中文表头: '序号', '目的地邮编', 'GOFO_大区', '省州', '城市'
     """
     db = {}
     path = os.path.join(DATA_DIR, tier_file)
@@ -588,35 +593,37 @@ def load_zip_db(tier_file):
         df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
         
         start_row = -1
-        zip_col = -1
-        city_col = -1
-        state_col = -1
+        cols = {}
         
-        # 扫描寻找表头 (增加范围)
-        for r in range(150):
+        # 扫描定位表头
+        for r in range(min(200, df.shape[0])):
             row_vals = [str(x).strip() for x in df.iloc[r].values]
-            if "目的地邮编" in row_vals or "Zip" in row_vals:
+            if "目的地邮编" in row_vals or "GOFO_大区" in row_vals:
                 start_row = r
                 for c, v in enumerate(row_vals):
-                    if "邮编" in v or "Zip" in v: zip_col = c
-                    elif "城市" in v or "City" in v: city_col = c
-                    elif "省州" in v or "State" in v: state_col = c
+                    if "邮编" in v: cols['zip'] = c
+                    elif "城市" in v: cols['city'] = c
+                    elif "省州" in v or "State" in v: cols['state'] = c
+                    elif "大区" in v or "Region" in v: cols['region'] = c
                 break
         
-        if start_row != -1 and zip_col != -1:
+        if start_row != -1 and 'zip' in cols:
             # 提取数据
             for r in range(start_row+1, len(df)):
                 try:
-                    z = str(df.iloc[r, zip_col]).split('.')[0].strip().zfill(5)
-                    city = str(df.iloc[r, city_col]).strip().title() if city_col!=-1 else ""
-                    state = str(df.iloc[r, state_col]).strip().upper() if state_col!=-1 else ""
+                    raw_zip = str(df.iloc[r, cols['zip']])
+                    z = raw_zip.split('.')[0].strip().zfill(5)
                     
                     if len(z) == 5 and z.isdigit():
-                        db[z] = {"city": city, "state": state}
+                        db[z] = {
+                            "city": str(df.iloc[r, cols.get('city', -1)]).strip(),
+                            "state": str(df.iloc[r, cols.get('state', -1)]).strip(),
+                            "region": str(df.iloc[r, cols.get('region', -1)]).strip()
+                        }
                 except: continue
-        print(f"  [Info] Zip DB loaded: {len(db)} entries")
+        print(f"  [Info] GOFO Zip DB loaded: {len(db)} entries")
     except Exception as e:
-        print(f"  [Err] Zip DB load failed: {e}")
+        print(f"  [Err] Failed to load GOFO Zip DB: {e}")
     return db
 
 def extract_prices(df, split_side=None):
@@ -625,7 +632,7 @@ def extract_prices(df, split_side=None):
     total_cols = df.shape[1]
     c_start, c_end = 0, total_cols
     
-    # 核心修复：智能分栏 (查找两个 '重量' 列的位置)
+    # 核心修复：智能分栏
     weight_indices = []
     for c in range(total_cols):
         for r in range(50):
@@ -642,9 +649,9 @@ def extract_prices(df, split_side=None):
         if len(weight_indices) > 1:
             c_start = weight_indices[1]
         else:
-            return [] # 无右侧表
+            return [] 
 
-    # 1. 深度扫描表头 (200行)
+    # 1. 深度扫描表头
     h_row = -1
     w_col = -1
     z_map = {}
@@ -665,7 +672,6 @@ def extract_prices(df, split_side=None):
         if c >= total_cols: break
         val = str(row_dat[c]).strip().lower()
         if ('weight' in val or '重量' in val) and w_col == -1: w_col = c
-        # 兼容 Zone~2, Zone 2
         m = re.search(r'zone[\D]*(\d+)', val)
         if m: z_map[int(m.group(1))] = c
 
@@ -704,16 +710,15 @@ def extract_prices(df, split_side=None):
 def main():
     if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR)
     
-    print("--- Starting Generation (Excel Mode) ---")
+    print("--- Starting Generation (V2026.8 Final) ---")
     
-    # 加载邮编库 (从T0)
-    zip_db = load_zip_db("T0.xlsx")
+    # 优先从 T0 加载 GOFO 邮编库
+    zip_db = load_gofo_zip_db("T0.xlsx")
     
     final_data = {
         "warehouses": WAREHOUSE_DB,
         "channels": CHANNEL_CONFIG,
         "zip_db": zip_db,
-        "us_states_cn": US_STATES_CN,
         "tiers": {}
     }
 
@@ -727,18 +732,13 @@ def main():
         tier_data = {}
         try:
             xl = pd.ExcelFile(path)
-            
-            # 提取该Tier的燃油费 (全局或单表)
             fuel_rate = extract_fuel_rate(xl)
             
             for ch_key, conf in CHANNEL_CONFIG.items():
-                # 找 Sheet
                 sheet = find_sheet_name(xl, conf["keywords"], conf.get("exclude"))
                 if not sheet: continue
                 
                 df = pd.read_excel(xl, sheet_name=sheet, header=None)
-                
-                # 提取价格
                 prices = extract_prices(df, split_side=conf.get("sheet_side"))
                 
                 if prices:
@@ -752,7 +752,6 @@ def main():
         
         final_data["tiers"][tier] = tier_data
 
-    # 生成文件
     json_str = json.dumps(final_data, ensure_ascii=False).replace("NaN", "0")
     html = HTML_TEMPLATE.replace('__JSON_DATA__', json_str)
     
