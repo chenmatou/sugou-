@@ -4,12 +4,13 @@ import re
 import os
 import warnings
 from datetime import datetime
+import subprocess # 用于调用系统命令读取PDF
 
 # 忽略 Excel 样式警告
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 # ==========================================
-# 1. 全局配置 & 核心数据
+# 1. 全局配置
 # ==========================================
 DATA_DIR = "data"
 OUTPUT_DIR = "public"
@@ -31,92 +32,85 @@ WAREHOUSE_DB = {
 }
 
 # 渠道配置
-# fuel_calc: 'manual'(前端显示输入框/自动抓取), 'none'(无燃油)
-# fuel_discount: True (燃油费打85折)
-# zone_mode: 'gofo'(查GOFO表), 'standard'(标准距离)
+# fuel_mode: 
+#   'included': 已含油，不计算
+#   'discount_85': (Base+Surcharge)*Rate*0.85
+#   'standard': (Base+Surcharge)*Rate
+#   'none': 无燃油
+# zone_source: 'gofo'(查GOFO表), 'general'(查通用距离)
 CHANNEL_CONFIG = {
     "GOFO-报价": {
         "keywords": ["GOFO", "报价"], 
         "exclude": ["MT", "UNIUNI", "大件"],
         "allow_wh": ["91730", "60632"], 
-        "fuel_calc": "none", 
-        "fuel_discount": False,
-        "zone_mode": "gofo", # 独立分区
+        "fuel_mode": "none",
+        "zone_source": "gofo",
         "fees": {"res": 0, "sig": 0} 
     },
     "GOFO-MT-报价": {
         "keywords": ["GOFO", "UNIUNI", "MT"],
-        "sheet_side": "left", # 左侧表格
+        "sheet_side": "left",
         "allow_wh": ["91730", "60632"],
-        "fuel_calc": "manual",
-        "fuel_discount": False,
-        "zone_mode": "gofo", # 独立分区
+        "fuel_mode": "standard", # MT系列正常收
+        "zone_source": "gofo",
         "fees": {"res": 0, "sig": 0}
     },
     "UNIUNI-MT-报价": {
         "keywords": ["GOFO", "UNIUNI", "MT"],
-        "sheet_side": "right", # 右侧表格
+        "sheet_side": "right",
         "allow_wh": ["91730", "60632"],
-        "fuel_calc": "none",
-        "fuel_discount": False,
-        "zone_mode": "gofo", # 暂用GOFO分区或标准
+        "fuel_mode": "none",
+        "zone_source": "general",
         "fees": {"res": 0, "sig": 0}
     },
     "USPS-YSD-报价": {
         "keywords": ["USPS", "YSD"],
         "allow_wh": ["91730", "91752", "60632"], 
-        "fuel_calc": "none",
-        "fuel_discount": False,
-        "zone_mode": "standard",
+        "fuel_mode": "none", # 基础含油
+        "zone_source": "general",
         "fees": {"res": 0, "sig": 0},
         "no_peak": True 
     },
     "FedEx-632-MT-报价": {
         "keywords": ["632"],
         "allow_wh": ["91730", "91752", "60632", "08691", "06801", "11791", "07032"],
-        "fuel_calc": "manual", 
-        "fuel_discount": True, # 85折
-        "zone_mode": "standard",
+        "fuel_mode": "discount_85", # 85折
+        "zone_source": "general",
         "fees": {"res": 2.61, "sig": 4.37}
     },
     "FedEx-MT-超大包裹-报价": {
         "keywords": ["超大包裹"],
         "allow_wh": ["91730", "91752", "60632", "08691", "06801", "11791", "07032"],
-        "fuel_calc": "manual",
-        "fuel_discount": True, # 85折
-        "zone_mode": "standard",
+        "fuel_mode": "discount_85", # 85折
+        "zone_source": "general",
         "fees": {"res": 2.61, "sig": 4.37}
     },
     "FedEx-ECO-MT报价": {
         "keywords": ["ECO", "MT"],
         "allow_wh": ["91730", "91752", "60632", "08691", "06801", "11791", "07032"],
-        "fuel_calc": "manual",
-        "fuel_discount": False,
-        "zone_mode": "standard",
+        "fuel_mode": "included", # 核心修改：已含油，不叠加
+        "zone_source": "general",
         "fees": {"res": 0, "sig": 0}
     },
     "FedEx-MT-危险品-报价": {
         "keywords": ["危险品"],
         "allow_wh": ["60632", "08691", "06801", "11791", "07032"], 
-        "fuel_calc": "manual",
-        "fuel_discount": False,
-        "zone_mode": "standard",
+        "fuel_mode": "standard",
+        "zone_source": "general",
         "fees": {"res": 3.32, "sig": 9.71}
     },
     "GOFO大件-MT-报价": {
         "keywords": ["GOFO大件", "MT"],
         "allow_wh": ["91730", "91752", "08691", "06801", "11791", "07032"], 
-        "fuel_calc": "manual", 
-        "fuel_discount": False,
-        "zone_mode": "gofo",
+        "fuel_mode": "standard", 
+        "zone_source": "gofo", # GOFO系列用GOFO分区
         "fees": {"res": 2.93, "sig": 0} 
     },
     "XLmiles-报价": {
         "keywords": ["XLmiles"],
         "allow_wh": ["91730"], 
-        "fuel_calc": "none", 
-        "fuel_discount": False,
-        "zone_mode": "standard",
+        "fuel_mode": "none", 
+        "zone_source": "general",
         "fees": {"res": 0, "sig": 10.20}
     }
 }
@@ -130,17 +124,20 @@ HTML_TEMPLATE = r"""
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>业务员报价助手 (V2026.8 旗舰版)</title>
+  <title>业务员报价助手 (V2026.9 Final)</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    body { background-color: #f8f9fa; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
-    .header-bar { background: #212529; color: white; padding: 15px 0; border-bottom: 4px solid #0d6efd; margin-bottom: 20px; }
-    .card { border: none; box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.05); border-radius: 0.5rem; }
-    .card-header { background-color: #fff; border-bottom: 1px solid #e9ecef; font-weight: 700; }
-    .price-main { font-size: 1.4rem; font-weight: 800; color: #0d6efd; }
-    .warn-box { background: #fff3cd; border: 1px solid #ffeeba; color: #856404; padding: 15px; border-radius: 6px; font-size: 0.9rem; margin-bottom: 15px; }
+    body { background-color: #f4f7f6; font-family: 'Segoe UI', sans-serif; }
+    .header-bar { background: #222; color: #fff; padding: 15px 0; border-bottom: 4px solid #fd7e14; margin-bottom: 20px; }
+    .card { border: none; box-shadow: 0 4px 12px rgba(0,0,0,0.05); border-radius: 10px; }
+    .card-header { background-color: #fff; font-weight: 700; border-bottom: 1px solid #eee; }
+    .price-main { font-size: 1.4rem; font-weight: 800; color: #d63384; }
+    .warn-box { background: #fff3cd; border: 1px solid #ffeeba; color: #856404; padding: 12px; border-radius: 6px; font-size: 0.85rem; margin-bottom: 15px; }
     .compliance-box { background: #e9ecef; border-radius: 6px; padding: 10px; margin-top: 15px; font-size: 0.85rem; }
-    .location-tag { font-size: 0.9rem; background: #e7f1ff; color: #0d6efd; padding: 5px 10px; border-radius: 4px; display:block; margin-top:5px; border:1px solid #b6effb; font-weight:bold;}
+    /* 邮编双显样式 */
+    .loc-box { margin-top: 5px; font-size: 0.85rem; }
+    .tag-gofo { background: #d1e7dd; color: #0f5132; padding: 2px 6px; border-radius: 4px; border: 1px solid #badbcc; display: block; margin-bottom: 2px; }
+    .tag-fedex { background: #cfe2ff; color: #084298; padding: 2px 6px; border-radius: 4px; border: 1px solid #b6d4fe; display: block; }
     .status-ok { color: #198754; font-weight: 700; }
     .status-err { color: #dc3545; font-weight: 700; }
   </style>
@@ -149,8 +146,8 @@ HTML_TEMPLATE = r"""
 
 <div class="header-bar">
   <div class="container d-flex justify-content-between align-items-center">
-    <div><h4 class="m-0 fw-bold">📦 业务员报价助手</h4><div class="small opacity-75">V2026.8 | GOFO独立邮编库 | FedEx文件引用</div></div>
-    <div class="text-end d-none d-md-block"><span class="badge bg-primary">T0-T3 实时计算</span></div>
+    <div><h4 class="m-0 fw-bold">📦 业务员报价助手</h4><div class="small opacity-75">V2026.9 | Zone动态计算修复 | 邮编双源识别</div></div>
+    <div class="text-end d-none d-md-block"><span class="badge bg-warning text-dark">T0-T3 实时</span></div>
   </div>
 </div>
 
@@ -186,7 +183,10 @@ HTML_TEMPLATE = r"""
                     <input type="number" class="form-control fw-bold text-primary" id="fuelInput" value="16.0" step="0.01">
                     <span class="input-group-text">%</span>
                 </div>
-                <div class="form-text small text-muted" style="font-size:0.75rem">* FedEx-632/超大件自动应用85折。</div>
+                <div class="form-text small text-muted" style="font-size:0.7rem">
+                  * 仅 FedEx-632/超大件 享85折。<br>
+                  * FedEx-ECO-MT 已含油 (不叠加)。
+                </div>
             </div>
 
             <div class="row g-2 mb-3">
@@ -241,12 +241,13 @@ HTML_TEMPLATE = r"""
         </div>
         <div class="card-body">
           <div class="warn-box">
-            <strong>📢 注意事项：</strong><br>
-            1. <b>燃油</b>：MT渠道自动抓取费率；FedEx-632/超大包裹享受 <b>85折</b>。<br>
-            2. <b>邮编分区</b>：GOFO/UniUni使用自营邮编库；FedEx系列使用标准分区逻辑。<br>
-            3. <b>地区识别</b>：系统自动识别并显示美国城市/州 (Burlington, VT)。<br>
-            4. <b>无报价</b>：请检查包裹重量是否超过20lb(UniUni)或70lb(USPS)等限制。<br>
-            5. <b>实报实销</b>：尺寸/重量/偏远等产生的额外费用按账单补收。
+            <strong>📢 计费规则说明：</strong><br>
+            1. <b>燃油费</b>：FedEx-632/超大包裹 (85折)；FedEx-ECO-MT (已含油)；其他MT (全额)。<br>
+            2. <b>邮编逻辑</b>：<br>
+               &nbsp;&nbsp; ● <b>GOFO</b>：优先查自营表(WE/EA/CE)与仓库匹配。<br>
+               &nbsp;&nbsp; ● <b>FedEx/USPS</b>：根据 <b>发货仓库</b> 动态计算分区 (美西发美西=Z2, 发美东=Z8)。<br>
+            3. <b>偏远检查</b>：已尝试读取 FedEx DAS PDF，若命中将显示标识。<br>
+            4. <b>无报价</b>：请检查是否超重 (UniUni<20lb, USPS<70lb)。
           </div>
 
           <div class="alert alert-info py-2 small" id="pkgInfo">请在左侧录入数据...</div>
@@ -283,19 +284,29 @@ HTML_TEMPLATE = r"""
   const DATA = __JSON_DATA__;
   document.getElementById('updateTime').innerText = new Date().toLocaleDateString();
 
-  // --- 1. 邮编显示逻辑 (修复: 查GOFO库) ---
+  // --- 1. 邮编双显逻辑 (GOFO表 + 通用表) ---
   document.getElementById('zipCode').addEventListener('input', function() {
     let zip = this.value.trim();
     let display = document.getElementById('locDisplay');
     
     if(zip.length === 5) {
-        if(DATA.zip_db && DATA.zip_db[zip]) {
-            let info = DATA.zip_db[zip];
-            // 显示 City, State (ZoneRegion)
-            display.innerHTML = `<div class="location-tag">📍 ${info.city}, ${info.state} <span class="badge bg-light text-dark border ms-1">${info.region}区</span></div>`;
-        } else {
-            display.innerHTML = `<div class="location-tag text-muted">未知地区 (使用通用分区)</div>`;
+        let html = '';
+        
+        // 1. GOFO 自营库
+        if(DATA.gofo_zips && DATA.gofo_zips[zip]) {
+            let g = DATA.gofo_zips[zip];
+            html += `<div class="tag-gofo">🟢 [GOFO表] ${g.city}, ${g.state} (区域:${g.region})</div>`;
         }
+        
+        // 2. FedEx/通用库 (DAS)
+        // 假设 DATA.fedex_das 存了 PDF 解析的集合
+        let fedexInfo = "通用地区";
+        if(DATA.fedex_das_remote && DATA.fedex_das_remote.includes(zip)) fedexInfo = "⚠️ FedEx偏远(Remote)";
+        else if(DATA.fedex_das_extended && DATA.fedex_das_extended.includes(zip)) fedexInfo = "⚠️ FedEx扩展(Extended)";
+        
+        html += `<div class="tag-fedex">🔵 [通用/FedEx] ${fedexInfo}</div>`;
+        
+        display.innerHTML = `<div class="loc-box">${html}</div>`;
     } else {
         display.innerHTML = '';
     }
@@ -379,44 +390,49 @@ HTML_TEMPLATE = r"""
   });
   if(whSelect.options.length > 0) whSelect.dispatchEvent(new Event('change'));
 
-  // --- 5. Zone 计算 (关键修改) ---
+  // --- 5. Zone 计算 (关键修复：根据Origin计算) ---
   function calcZone(destZip, originZip, conf) {
     if(!destZip || destZip.length < 3) return 8;
     
     let d = parseInt(destZip.substring(0,3));
     let whRegion = DATA.warehouses[originZip].region;
 
-    // A. GOFO独立分区逻辑
-    if(conf.zone_mode === 'gofo') {
-        if(DATA.zip_db && DATA.zip_db[destZip]) {
-            let zipRegion = DATA.zip_db[destZip].region; // "WE", "EA", "CE"
-            
-            // 简单映射逻辑 (GOFO规则: 本区=Zone2-4, 跨区=Zone5-8)
-            // 需根据实际业务表微调，这里提供基础框架
-            if (whRegion === 'WEST' && zipRegion === 'WE') return 2;
-            if (whRegion === 'EAST' && zipRegion === 'EA') return 2;
-            if (whRegion === 'CENTRAL' && zipRegion === 'CE') return 2;
-            // 跨区
+    // A. GOFO专用逻辑: 查表
+    if(conf.zone_source === 'gofo') {
+        if(DATA.gofo_zips && DATA.gofo_zips[destZip]) {
+            let zReg = DATA.gofo_zips[destZip].region; // WE, EA, CE
+            // 简单匹配：同区=Zone2，跨区=Zone8 (可根据实际微调)
+            if(whRegion=='WEST' && zReg=='WE') return 2;
+            if(whRegion=='CENTRAL' && zReg=='CE') return 2;
+            if(whRegion=='EAST' && zReg=='EA') return 2;
             return 8; 
         }
-        // 查不到邮编，默认Zone 8
         return 8;
     }
 
-    // B. FedEx/USPS 标准逻辑
+    // B. FedEx/USPS 通用逻辑 (基于发货仓的距离算法)
     if(whRegion === 'WEST') {
-      if(d >= 900 && d <= 935) return 2;
-      if(d >= 936 && d <= 994) return 4;
-      return 8;
+      // 美西发货
+      if(d >= 900 && d <= 935) return 2; // CA South
+      if(d >= 936 && d <= 994) return 4; // CA North / WA / OR
+      if(d >= 800 && d <= 899) return 5; // Mountain
+      if(d >= 0 && d <= 200) return 8;   // East Coast
+      return 7;
     }
     if(whRegion === 'EAST') {
-      if(d >= 70 && d <= 89) return 2;
-      if(d >= 100 && d <= 199) return 4;
-      return 8;
+      // 美东发货
+      if(d >= 0 && d <= 199) return 2;   // East
+      if(d >= 200 && d <= 299) return 4; 
+      if(d >= 900 && d <= 999) return 8; // West Coast
+      return 6;
     }
     if(whRegion === 'CENTRAL') {
-       if(d >= 600 && d <= 629) return 2;
-       return 6;
+       // 美中发货
+       if(d >= 600 && d <= 629) return 2; // IL
+       if(d >= 400 && d <= 599) return 4;
+       if(d >= 900 && d <= 999) return 7; // West
+       if(d >= 0 && d <= 200) return 6;   // East
+       return 5;
     }
     return 8;
   }
@@ -471,7 +487,7 @@ HTML_TEMPLATE = r"""
         svcTag = `<br><small class="text-primary">${xl.name}</small>`;
       }
 
-      // 4. 查基础运费
+      // 4. 查价
       let priceTable = (DATA.tiers[tier][chName] || {}).prices || [];
       let row = priceTable.find(r => r.w >= finalWt - 0.001);
       
@@ -493,12 +509,12 @@ HTML_TEMPLATE = r"""
         details.push(`签名 $${conf.fees.sig}`);
       }
 
-      // 6. 燃油费
-      if(conf.fuel_calc !== 'none') {
+      // 6. 燃油费逻辑
+      if(conf.fuel_mode !== 'none' && conf.fuel_mode !== 'included') {
         let rate = fuelRateInput / 100;
         let tag = "";
         
-        if (conf.fuel_discount) {
+        if (conf.fuel_mode === 'discount_85') {
             rate = rate * 0.85; 
             tag = " (85折)";
         }
@@ -506,6 +522,8 @@ HTML_TEMPLATE = r"""
         let fuelAmt = (basePrice + surcharges) * rate;
         surcharges += fuelAmt;
         details.push(`燃油${tag} ${(rate*100).toFixed(2)}%: $${fuelAmt.toFixed(2)}`);
+      } else if (conf.fuel_mode === 'included') {
+        details.push(`燃油: 已含`);
       }
 
       let total = basePrice + surcharges;
@@ -534,7 +552,7 @@ HTML_TEMPLATE = r"""
 """
 
 # ==========================================
-# 3. 后端处理逻辑
+# 3. 后端处理 (PDF读取 + GOFO表扫描)
 # ==========================================
 
 def clean_num(val):
@@ -546,7 +564,6 @@ def clean_num(val):
         return 0.0
 
 def find_sheet_name(xl, keywords, exclude_keywords=None):
-    """ 查找 Sheet """
     for sheet in xl.sheet_names:
         s_upper = sheet.upper().replace(" ", "")
         if not all(k.upper() in s_upper for k in keywords):
@@ -557,7 +574,6 @@ def find_sheet_name(xl, keywords, exclude_keywords=None):
     return None
 
 def extract_fuel_rate(xl):
-    """ 从MT表格中抓取燃油费率 """
     for sheet in xl.sheet_names:
         if "MT" in sheet.upper(): 
             try:
@@ -578,8 +594,8 @@ def extract_fuel_rate(xl):
 
 def load_gofo_zip_db(tier_file):
     """ 
-    专门从 GOFO-报价 表中加载邮编库
-    兼容中文表头: '序号', '目的地邮编', 'GOFO_大区', '省州', '城市'
+    专门从 GOFO-报价.csv 中提取自营邮编库
+    格式：序号 | 目的地邮编 | GOFO_大区 | 省州 | 城市
     """
     db = {}
     path = os.path.join(DATA_DIR, tier_file)
@@ -608,7 +624,6 @@ def load_gofo_zip_db(tier_file):
                 break
         
         if start_row != -1 and 'zip' in cols:
-            # 提取数据
             for r in range(start_row+1, len(df)):
                 try:
                     raw_zip = str(df.iloc[r, cols['zip']])
@@ -626,13 +641,49 @@ def load_gofo_zip_db(tier_file):
         print(f"  [Err] Failed to load GOFO Zip DB: {e}")
     return db
 
+def load_fedex_pdf_zips():
+    """ 
+    尝试读取 FedEx DAS PDF 文件
+    返回两个 Set: remote_zips, extended_zips
+    """
+    remote_zips = set()
+    extended_zips = set()
+    
+    # 定义文件名
+    pdf_files = [
+        "FGE_DAS_Contiguous_Extended_Alaska_Hawaii_2025.pdf",
+        "FGE_DAS_Zip_Code_Changes_2025.pdf"
+    ]
+    
+    for pdf in pdf_files:
+        path = os.path.join(DATA_DIR, pdf)
+        if not os.path.exists(path): continue
+        
+        try:
+            # 使用 pdftotext (需系统安装 poppler-utils)
+            # 如果没有，catch异常
+            txt = subprocess.check_output(["pdftotext", path, "-"]).decode('utf-8')
+            
+            # 简单的正则提取 (假设文件里全是邮编)
+            # 实际需要根据PDF结构区分Remote/Extended，这里简化为全部读取
+            # 如果您需要区分，需提供PDF内容结构
+            zips = re.findall(r'\b\d{5}\b', txt)
+            for z in zips:
+                # 简单分类: 实际上需要根据PDF标题判断
+                # 暂时全部存入 remote (作为示例)
+                remote_zips.add(z)
+                
+        except Exception as e:
+            print(f"  [Warn] PDF read failed (pdftotext missing?): {pdf}")
+            
+    return list(remote_zips), list(extended_zips)
+
 def extract_prices(df, split_side=None):
     if df is None: return []
     
     total_cols = df.shape[1]
     c_start, c_end = 0, total_cols
     
-    # 核心修复：智能分栏
     weight_indices = []
     for c in range(total_cols):
         for r in range(50):
@@ -651,7 +702,6 @@ def extract_prices(df, split_side=None):
         else:
             return [] 
 
-    # 1. 深度扫描表头
     h_row = -1
     w_col = -1
     z_map = {}
@@ -666,7 +716,6 @@ def extract_prices(df, split_side=None):
     
     if h_row == -1: return []
 
-    # 2. 映射列
     row_dat = df.iloc[h_row]
     for c in range(c_start, c_end):
         if c >= total_cols: break
@@ -677,7 +726,6 @@ def extract_prices(df, split_side=None):
 
     if w_col == -1 or not z_map: return []
 
-    # 3. 提取数据
     prices = []
     for r in range(h_row + 1, len(df)):
         try:
@@ -710,15 +758,20 @@ def extract_prices(df, split_side=None):
 def main():
     if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR)
     
-    print("--- Starting Generation (V2026.8 Final) ---")
+    print("--- Starting Generation (V2026.9 Final) ---")
     
-    # 优先从 T0 加载 GOFO 邮编库
-    zip_db = load_gofo_zip_db("T0.xlsx")
+    # 1. 加载 GOFO 邮编库
+    gofo_zips = load_gofo_zip_db("T0.xlsx")
+    
+    # 2. 加载 FedEx PDF 邮编 (如果存在)
+    fedex_remote, fedex_extended = load_fedex_pdf_zips()
     
     final_data = {
         "warehouses": WAREHOUSE_DB,
         "channels": CHANNEL_CONFIG,
-        "zip_db": zip_db,
+        "gofo_zips": gofo_zips,
+        "fedex_das_remote": fedex_remote,
+        "fedex_das_extended": fedex_extended,
         "tiers": {}
     }
 
