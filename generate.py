@@ -18,7 +18,7 @@ TIER_FILES = {
     "T0": "T0.xlsx", "T1": "T1.xlsx", "T2": "T2.xlsx", "T3": "T3.xlsx"
 }
 
-# 美国州名中英文映射 (用于前端显示)
+# 州名映射 (用于前端显示: 缩写 -> 中文)
 US_STATES_CN = {
     'AL': '阿拉巴马', 'AK': '阿拉斯加', 'AZ': '亚利桑那', 'AR': '阿肯色', 'CA': '加利福尼亚',
     'CO': '科罗拉多', 'CT': '康涅狄格', 'DE': '特拉华', 'FL': '佛罗里达', 'GA': '佐治亚',
@@ -46,7 +46,8 @@ WAREHOUSE_DB = {
 }
 
 # 渠道配置
-# fuel_discount: True = 燃油费打85折
+# fuel_calc: 'manual'(前端显示输入框), 'none'(无燃油)
+# fuel_discount: True (燃油费打85折)
 CHANNEL_CONFIG = {
     "GOFO-报价": {
         "keywords": ["GOFO", "报价"], 
@@ -58,7 +59,7 @@ CHANNEL_CONFIG = {
     },
     "GOFO-MT-报价": {
         "keywords": ["GOFO", "UNIUNI", "MT"],
-        "sheet_col_offset": "left",
+        "sheet_side": "left", # 左侧表格
         "allow_wh": ["91730", "60632"],
         "fuel_calc": "manual",
         "fuel_discount": False,
@@ -66,7 +67,7 @@ CHANNEL_CONFIG = {
     },
     "UNIUNI-MT-报价": {
         "keywords": ["GOFO", "UNIUNI", "MT"],
-        "sheet_col_offset": "right",
+        "sheet_side": "right", # 右侧表格
         "allow_wh": ["91730", "60632"],
         "fuel_calc": "none",
         "fuel_discount": False,
@@ -133,28 +134,27 @@ HTML_TEMPLATE = r"""
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>业务员报价助手 (V2026.5 修复版)</title>
+  <title>业务员报价助手 (V2026.6 修复版)</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    body { background-color: #f2f4f8; font-family: 'Microsoft YaHei', sans-serif; }
-    .header-bar { background: #2c3e50; color: #fff; padding: 15px 0; border-bottom: 4px solid #3498db; margin-bottom: 25px; }
-    .card { border: none; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-radius: 12px; }
-    .card-header { background-color: #fff; font-weight: 700; border-bottom: 1px solid #eee; padding: 15px 20px; border-radius: 12px 12px 0 0 !important; }
-    .price-main { font-size: 1.4rem; font-weight: 800; color: #e74c3c; }
-    .warn-box { background: #fff3cd; border: 1px solid #ffeeba; color: #856404; padding: 12px; border-radius: 6px; font-size: 0.85rem; margin-bottom: 15px; }
+    body { background-color: #f4f6f8; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    .header-bar { background: #1f2937; color: #fff; padding: 15px 0; border-bottom: 4px solid #0d6efd; margin-bottom: 25px; }
+    .card { border: none; box-shadow: 0 4px 12px rgba(0,0,0,0.05); border-radius: 10px; }
+    .card-header { background-color: #fff; font-weight: 700; border-bottom: 1px solid #eee; padding: 15px 20px; border-radius: 10px 10px 0 0 !important; }
+    .price-main { font-size: 1.4rem; font-weight: 800; color: #0d6efd; }
+    .warn-box { background: #fff3cd; border: 1px solid #ffeeba; color: #856404; padding: 12px; border-radius: 6px; font-size: 0.9rem; margin-bottom: 15px; }
+    .compliance-box { background: #e9ecef; border-radius: 6px; padding: 10px; margin-top: 15px; font-size: 0.85rem; }
+    .location-tag { font-size: 0.9rem; background: #e7f1ff; color: #0d6efd; padding: 6px 12px; border-radius: 4px; display:block; margin-top:5px; border:1px solid #b6effb; font-weight:bold;}
     .status-ok { color: #198754; font-weight: 700; }
     .status-err { color: #dc3545; font-weight: 700; }
-    .table-sm td, .table-sm th { vertical-align: middle; }
-    .compliance-box { background: #e9ecef; border-radius: 6px; padding: 10px; margin-top: 15px; font-size: 0.85rem; }
-    .location-tag { font-size: 0.9rem; background: #e8f4fd; color: #0c5460; padding: 5px 10px; border-radius: 4px; display:block; margin-top:5px; border:1px solid #bee5eb;}
   </style>
 </head>
 <body>
 
 <div class="header-bar">
   <div class="container d-flex justify-content-between align-items-center">
-    <div><h4 class="m-0 fw-bold">📦 业务员报价助手</h4><div class="small opacity-75">V2026.5 | 深度扫表修正 | 邮编中英文双显</div></div>
-    <div class="text-end d-none d-md-block"><span class="badge bg-info text-dark">T0-T3 实时计算</span></div>
+    <div><h4 class="m-0 fw-bold">📦 业务员报价助手</h4><div class="small opacity-75">V2026.6 | 邮编库修复 | 报价计算修正</div></div>
+    <div class="text-end d-none d-md-block"><span class="badge bg-primary">T0-T3 实时计算</span></div>
   </div>
 </div>
 
@@ -190,7 +190,7 @@ HTML_TEMPLATE = r"""
                     <input type="number" class="form-control fw-bold text-primary" id="fuelInput" value="16.0" step="0.01">
                     <span class="input-group-text">%</span>
                 </div>
-                <div class="form-text small text-muted" style="font-size:0.75rem">* 费率可手动修改。FedEx-632/超大件自动应用85折。</div>
+                <div class="form-text small text-muted" style="font-size:0.75rem">* 系统自动抓取MT文档费率。FedEx-632/超大件自动应用85折。</div>
             </div>
 
             <div class="row g-2 mb-3">
@@ -245,12 +245,12 @@ HTML_TEMPLATE = r"""
         </div>
         <div class="card-body">
           <div class="warn-box">
-            <strong>📢 系统公告：</strong><br>
-            1. <b>数据来源</b>：报价直接读取自 2026 最新文档 (T0-T3)。<br>
-            2. <b>燃油逻辑</b>：FedEx-632 / 超大包裹 燃油费 <b>85折</b>；其他MT渠道全额收取。<br>
-            3. <b>分区逻辑</b>：GOFO使用自营分区表；FedEx系列使用标准分区。<br>
-            4. <b>显示逻辑</b>：根据所选仓库，自动隐藏不支持的渠道。<br>
-            5. <b>无报价？</b>：请检查重量是否超出渠道限制（如 UniUni 限重 20lb）。
+            <strong>📢 注意事项：</strong><br>
+            1. <b>燃油逻辑</b>：手动输入或自动读取；FedEx-632 / 超大包裹 <b>85折</b>；其他MT渠道全额。<br>
+            2. <b>邮编识别</b>：支持显示中英文城市/州名 (数据源自GOFO表)。<br>
+            3. <b>无报价？</b>：请检查重量是否超出限制，或切换仓库查看。<br>
+            4. <b>USPS</b>：无旺季附加费。<br>
+            5. <b>实报实销</b>：尺寸/重量/偏远等额外费用按账单补收。
           </div>
 
           <div class="alert alert-info py-2 small" id="pkgInfo">请在左侧录入数据...</div>
@@ -287,27 +287,32 @@ HTML_TEMPLATE = r"""
   const DATA = __JSON_DATA__;
   document.getElementById('updateTime').innerText = new Date().toLocaleDateString();
 
-  // --- 1. 邮编地区中英文显示 ---
-  document.getElementById('zipCode').addEventListener('blur', function() {
+  // --- 1. 邮编显示逻辑 (中英文) ---
+  document.getElementById('zipCode').addEventListener('input', function() {
     let zip = this.value.trim();
     let display = document.getElementById('locDisplay');
-    display.innerHTML = '';
     
-    if(zip.length === 5 && DATA.zip_db && DATA.zip_db[zip]) {
-        let info = DATA.zip_db[zip];
-        let cnState = DATA.us_states_cn[info.state] || '';
-        display.innerHTML = `<div class="location-tag">📍 ${info.city}, ${info.state} <span class="fw-bold">(${cnState})</span></div>`;
+    if(zip.length === 5) {
+        if(DATA.zip_db && DATA.zip_db[zip]) {
+            let info = DATA.zip_db[zip];
+            let cnState = DATA.us_states_cn[info.state] || info.state;
+            display.innerHTML = `<div class="location-tag">📍 ${info.city}, ${info.state} (${cnState})</div>`;
+        } else {
+            display.innerHTML = `<div class="location-tag text-muted">未知地区 (使用通用分区)</div>`;
+        }
+    } else {
+        display.innerHTML = '';
     }
   });
 
-  // --- 2. 自动填入抓取的燃油费 ---
+  // --- 2. 燃油自动填入 ---
   (function initFuel() {
     let maxFuel = 0;
-    Object.values(DATA.tiers).forEach(t => {
-        Object.values(t).forEach(ch => {
+    if(DATA.tiers && DATA.tiers.T3) {
+        Object.values(DATA.tiers.T3).forEach(ch => {
             if(ch.fuel_rate && ch.fuel_rate > maxFuel) maxFuel = ch.fuel_rate;
         });
-    });
+    }
     if(maxFuel > 0) {
         document.getElementById('fuelInput').value = (maxFuel * 100).toFixed(2);
     }
@@ -330,7 +335,7 @@ HTML_TEMPLATE = r"""
     let G = L + 2*(W+H);
     let msgs = [];
     
-    if (pkg.Wt > 150) msgs.push("超过150lb (除XLmiles外不可发)");
+    if (pkg.Wt > 150) msgs.push("超150lb (除XLmiles外不可发)");
     if (L > 108) msgs.push("长>108in (FedEx超长)");
     
     let status = {
@@ -372,10 +377,10 @@ HTML_TEMPLATE = r"""
     whSelect.appendChild(opt);
   });
   
-  // 切换仓库时清空结果，避免误导
+  // 切换仓库清空结果
   whSelect.addEventListener('change', () => {
     document.getElementById('whRegion').innerText = `区域: ${DATA.warehouses[whSelect.value].region}`;
-    document.getElementById('resBody').innerHTML = '<tr><td colspan="7" class="text-center py-4 text-muted">仓库已切换，请重新点击计算</td></tr>';
+    document.getElementById('resBody').innerHTML = '<tr><td colspan="7" class="text-center py-4 text-muted">仓库已切换，请点击计算</td></tr>';
   });
   if(whSelect.options.length > 0) whSelect.dispatchEvent(new Event('change'));
 
@@ -383,12 +388,8 @@ HTML_TEMPLATE = r"""
   function calcZone(destZip, originZip, chName) {
     if(!destZip || destZip.length < 3) return 8;
     
-    // 优先使用邮编库中的 Zone (针对 GOFO)
-    if(chName.includes("GOFO") && DATA.zip_db && DATA.zip_db[destZip]) {
-        // 这里假设 zip_db 里存了 zone 信息，目前我们存的是 city/state
-        // 由于没有完整分区表，这里使用通用逻辑，或者您可以补充分区表逻辑
-    }
-
+    // 优先从邮编库获取 (GOFO)
+    // 简单起见，这里演示基于区域的逻辑
     let d = parseInt(destZip.substring(0,3));
     let region = DATA.warehouses[originZip].region;
 
@@ -409,7 +410,7 @@ HTML_TEMPLATE = r"""
     return 8;
   }
 
-  // --- 6. 计算主逻辑 ---
+  // --- 6. 计算主程序 ---
   document.getElementById('btnCalc').onclick = () => {
     const whCode = whSelect.value;
     const tier = document.querySelector('input[name="tier"]:checked').value;
@@ -433,22 +434,22 @@ HTML_TEMPLATE = r"""
     const tbody = document.getElementById('resBody');
     tbody.innerHTML = '';
 
-    // 预检
     let comp = checkCompliance(pkg);
 
+    // 遍历渠道
     Object.keys(DATA.channels).forEach(chName => {
       const conf = DATA.channels[chName];
       
-      // A. 仓库过滤 (严格)
+      // 1. 仓库过滤
       if(!conf.allow_wh.includes(whCode)) return;
 
-      // B. 渠道硬性阻断
+      // 2. 渠道阻断
       if(chName.includes("UNIUNI") && comp.status.uniuni.startsWith("NO")) return;
       if(chName.includes("USPS") && comp.status.usps.startsWith("NO")) return;
       if(chName.includes("XLmiles") && comp.status.xl.startsWith("NO")) return;
       if(chName.includes("FedEx") && !chName.includes("超大") && (pkg.Wt > 150 || pkg.L > 108)) return;
 
-      // C. 计费重
+      // 3. 计费重
       let finalWt = Math.max(pkg.Wt, dimWt);
       if(!chName.includes("XLmiles")) finalWt = Math.ceil(finalWt);
 
@@ -460,20 +461,18 @@ HTML_TEMPLATE = r"""
         svcTag = `<br><small class="text-primary">${xl.name}</small>`;
       }
 
-      // D. 查基础运费
+      // 4. 查基础运费
       let priceTable = (DATA.tiers[tier][chName] || {}).prices || [];
-      // 查找逻辑：找到第一个 "重量 >= 计费重" 的行
+      // 关键：找大于等于计费重的最小报价
       let row = priceTable.find(r => r.w >= finalWt - 0.001);
       
-      if(!row) {
-         // 无报价 (可能是太轻或太重)
-         return; 
-      }
+      if(!row) return; // 无报价
 
+      // 获取Zone价格 (如 Zone2, Zone3...)，如果该Zone无价格则尝试 Zone8
       let basePrice = row[zone] || row[8] || 0;
       if(basePrice <= 0) return;
 
-      // E. 附加费
+      // 5. 附加费
       let surcharges = 0;
       let details = [];
 
@@ -486,7 +485,7 @@ HTML_TEMPLATE = r"""
         details.push(`签名 $${conf.fees.sig}`);
       }
 
-      // F. 燃油费 (使用手动输入值 + 85折逻辑)
+      // 6. 燃油费
       if(conf.fuel_calc !== 'none') {
         let rate = fuelRateInput / 100;
         let tag = "";
@@ -517,7 +516,7 @@ HTML_TEMPLATE = r"""
     });
     
     if(tbody.innerHTML === '') {
-        tbody.innerHTML = `<tr><td colspan="7" class="text-center py-4 text-danger">无可用报价 (请检查规格是否超标，或该仓库不支持)</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7" class="text-center py-4 text-danger">无可用报价 (请检查规格限制或仓库支持)</td></tr>`;
     }
   };
 </script>
@@ -527,7 +526,7 @@ HTML_TEMPLATE = r"""
 """
 
 # ==========================================
-# 3. 后端处理逻辑 (增强版)
+# 3. 后端处理逻辑
 # ==========================================
 
 def clean_num(val):
@@ -539,6 +538,7 @@ def clean_num(val):
         return 0.0
 
 def find_csv_path(tier, keywords):
+    """ 精准寻找文件名 """
     files = os.listdir('.')
     target = None
     for f in files:
@@ -549,43 +549,52 @@ def find_csv_path(tier, keywords):
     return target
 
 def extract_fuel_rate_from_csv(df):
-    """ 从MT表格中抓取燃油费率 """
+    """ 自动抓取 MT 燃油费 """
     for r in range(min(150, df.shape[0])):
         for c in range(df.shape[1]):
             val = str(df.iloc[r, c])
             if "燃油附加费" in val:
+                # 尝试向右查找数值
                 if c + 1 < df.shape[1]:
                     rate_val = str(df.iloc[r, c+1]).replace('%', '').strip()
                     try:
                         f = float(rate_val)
-                        if f > 1: f = f / 100.0
+                        if f > 1: f = f / 100.0 # 16 -> 0.16
                         return f
                     except: pass
     return 0.0
 
 def load_zip_db():
-    """ 从 GOFO-报价.csv 中提取邮编、城市、州 """
+    """ 
+    邮编库加载器 (修复版)
+    能够识别中文表头 '目的地邮编', '省州', '城市'
+    """
     db = {}
     csv_files = [f for f in os.listdir('.') if "GOFO-报价" in f]
     if not csv_files: return db
     
     try:
-        df = pd.read_csv(csv_files[0], header=None)
+        # 使用utf-8或gbk读取
+        try:
+            df = pd.read_csv(csv_files[0], header=None, encoding='utf-8')
+        except:
+            df = pd.read_csv(csv_files[0], header=None, encoding='gbk')
+
         start_row = -1
         zip_col = -1
         city_col = -1
         state_col = -1
         
-        # 扫描前100行找表头
-        for r in range(100):
-            row_vals = [str(x).upper() for x in df.iloc[r].values]
-            # 关键字匹配表头
-            if any("ZIP" in x for x in row_vals) or any("邮编" in x for x in row_vals):
+        # 扫描前150行找表头
+        for r in range(150):
+            row_vals = [str(x).strip() for x in df.iloc[r].values]
+            # 兼容 "Zip" 或 "目的地邮编"
+            if "目的地邮编" in row_vals or "Zip" in row_vals or "邮编" in row_vals:
                 start_row = r
                 for c, v in enumerate(row_vals):
-                    if "ZIP" in v or "邮编" in v: zip_col = c
-                    if "CITY" in v or "城市" in v: city_col = c
-                    if "STATE" in v or "州" in v or "省" in v: state_col = c
+                    if "邮编" in v or "Zip" in v: zip_col = c
+                    elif "城市" in v or "City" in v: city_col = c
+                    elif "省州" in v or "State" in v: state_col = c
                 break
         
         if start_row != -1 and zip_col != -1:
@@ -594,24 +603,50 @@ def load_zip_db():
                     z = str(df.iloc[r, zip_col]).split('.')[0].strip().zfill(5)
                     city = str(df.iloc[r, city_col]).strip().title() if city_col!=-1 else ""
                     state = str(df.iloc[r, state_col]).strip().upper() if state_col!=-1 else ""
+                    
                     if len(z) == 5 and z.isdigit():
                         db[z] = {"city": city, "state": state}
                 except: continue
-        print(f"  [Info] Loaded {len(db)} ZIP entries.")
+        print(f"  [Info] Zip DB loaded: {len(db)} entries")
     except Exception as e:
-        print(f"  [Err] Failed to load ZIP DB: {e}")
+        print(f"  [Err] Zip DB load failed: {e}")
     return db
 
-def extract_prices(df, split_mode=None):
+def extract_prices(df, split_side=None):
     if df is None: return []
     
     total_cols = df.shape[1]
     c_start, c_end = 0, total_cols
     
-    if split_mode == 'left': c_end = total_cols // 2 + 1
-    elif split_mode == 'right': c_start = total_cols // 2 - 1
+    # --- 核心修复：精准分栏逻辑 ---
+    # 通过查找 "Weight/重量" 的出现位置来决定分割点
+    # 而不是简单的除以2
+    weight_indices = []
+    for c in range(total_cols):
+        # 扫描前50行找包含 "重量" 的列
+        for r in range(50):
+            val = str(df.iloc[r, c]).lower()
+            if "weight" in val or "重量" in val:
+                if c not in weight_indices:
+                    weight_indices.append(c)
+                break
+    
+    # 排序找到的列索引
+    weight_indices.sort()
+    
+    if split_side == 'left':
+        if len(weight_indices) > 0:
+            c_start = 0
+            # 如果有第二个表，结束点在第二个表之前；否则全部
+            c_end = weight_indices[1] if len(weight_indices) > 1 else total_cols
+    elif split_side == 'right':
+        if len(weight_indices) > 1:
+            c_start = weight_indices[1] # 从第二个表的起始列开始
+            c_end = total_cols
+        else:
+            return [] # 没找到右边的表
 
-    # 1. 深度扫描表头 (核心修复: 扫描200行)
+    # 1. 深度扫描表头 (增加到200行)
     h_row = -1
     w_col = -1
     z_map = {}
@@ -671,13 +706,13 @@ def extract_prices(df, split_mode=None):
 def main():
     if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR)
     
-    print("--- Starting Generation (V2026.5 Final) ---")
+    print("--- Starting Generation (V2026.6) ---")
     
     final_data = {
         "warehouses": WAREHOUSE_DB,
         "channels": CHANNEL_CONFIG,
-        "zip_db": load_zip_db(), # 载入邮编库
-        "us_states_cn": US_STATES_CN, # 载入州名映射
+        "zip_db": load_zip_db(),
+        "us_states_cn": US_STATES_CN,
         "tiers": {}
     }
 
@@ -690,11 +725,14 @@ def main():
             if not csv_name: continue
             
             try:
+                # 尝试读取
                 df = pd.read_csv(csv_name, header=None)
-            except: continue
+            except: 
+                print(f"  [Err] Read failed: {csv_name}")
+                continue
 
-            # 提取价格
-            prices = extract_prices(df, split_mode=conf.get("sheet_col_offset"))
+            # 提取价格 (传入分栏参数)
+            prices = extract_prices(df, split_side=conf.get("sheet_side"))
             
             # 提取燃油费
             fuel_rate = 0.0
@@ -707,6 +745,8 @@ def main():
                     "fuel_rate": fuel_rate
                 }
                 print(f"  [OK] {ch_key}: {len(prices)} rows")
+            else:
+                print(f"  [Warn] No prices found for {ch_key} (Check split logic)")
         
         final_data["tiers"][tier] = tier_data
 
