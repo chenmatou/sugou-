@@ -14,6 +14,7 @@ warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 DATA_DIR = "data"
 OUTPUT_DIR = "public"
 
+# 文件名定义
 TIER_FILES = {
     "T0": "T0.xlsx", "T1": "T1.xlsx", "T2": "T2.xlsx", "T3": "T3.xlsx"
 }
@@ -33,7 +34,7 @@ US_STATES_CN = {
     'DC': '华盛顿特区'
 }
 
-# 仓库配置
+# 仓库配置 (严格分类)
 WAREHOUSE_DB = {
     "60632": {"name": "SureGo美中芝加哥-60632仓", "region": "CENTRAL"},
     "91730": {"name": "SureGo美西库卡蒙格-91730新仓", "region": "WEST"},
@@ -46,8 +47,9 @@ WAREHOUSE_DB = {
 }
 
 # 渠道配置
-# fuel_calc: 'manual'(前端显示输入框), 'none'(无燃油)
+# fuel_calc: 'manual'(前端显示输入框/自动抓取), 'none'(无燃油)
 # fuel_discount: True (燃油费打85折)
+# sheet_side: 'left'/'right' 用于同表分栏
 CHANNEL_CONFIG = {
     "GOFO-报价": {
         "keywords": ["GOFO", "报价"], 
@@ -134,15 +136,15 @@ HTML_TEMPLATE = r"""
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>业务员报价助手 (V2026.6 修复版)</title>
+  <title>业务员报价助手 (V2026.7 完美修复版)</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    body { background-color: #f4f6f8; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-    .header-bar { background: #1f2937; color: #fff; padding: 15px 0; border-bottom: 4px solid #0d6efd; margin-bottom: 25px; }
-    .card { border: none; box-shadow: 0 4px 12px rgba(0,0,0,0.05); border-radius: 10px; }
-    .card-header { background-color: #fff; font-weight: 700; border-bottom: 1px solid #eee; padding: 15px 20px; border-radius: 10px 10px 0 0 !important; }
-    .price-main { font-size: 1.4rem; font-weight: 800; color: #0d6efd; }
-    .warn-box { background: #fff3cd; border: 1px solid #ffeeba; color: #856404; padding: 12px; border-radius: 6px; font-size: 0.9rem; margin-bottom: 15px; }
+    body { background-color: #f4f6f8; font-family: 'Microsoft YaHei', sans-serif; }
+    .header-bar { background: #2c3e50; color: #fff; padding: 15px 0; border-bottom: 4px solid #3498db; margin-bottom: 25px; }
+    .card { border: none; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-radius: 12px; }
+    .card-header { background-color: #fff; font-weight: 700; border-bottom: 1px solid #eee; padding: 15px 20px; border-radius: 12px 12px 0 0 !important; }
+    .price-main { font-size: 1.4rem; font-weight: 800; color: #e74c3c; }
+    .warn-box { background: #fff3cd; border: 1px solid #ffeeba; color: #856404; padding: 12px; border-radius: 6px; font-size: 0.85rem; margin-bottom: 15px; }
     .compliance-box { background: #e9ecef; border-radius: 6px; padding: 10px; margin-top: 15px; font-size: 0.85rem; }
     .location-tag { font-size: 0.9rem; background: #e7f1ff; color: #0d6efd; padding: 6px 12px; border-radius: 4px; display:block; margin-top:5px; border:1px solid #b6effb; font-weight:bold;}
     .status-ok { color: #198754; font-weight: 700; }
@@ -153,8 +155,8 @@ HTML_TEMPLATE = r"""
 
 <div class="header-bar">
   <div class="container d-flex justify-content-between align-items-center">
-    <div><h4 class="m-0 fw-bold">📦 业务员报价助手</h4><div class="small opacity-75">V2026.6 | 邮编库修复 | 报价计算修正</div></div>
-    <div class="text-end d-none d-md-block"><span class="badge bg-primary">T0-T3 实时计算</span></div>
+    <div><h4 class="m-0 fw-bold">📦 业务员报价助手</h4><div class="small opacity-75">V2026.7 | 恢复邮编显示 | 修复报价读取</div></div>
+    <div class="text-end d-none d-md-block"><span class="badge bg-info text-dark">T0-T3 实时计算</span></div>
   </div>
 </div>
 
@@ -190,7 +192,7 @@ HTML_TEMPLATE = r"""
                     <input type="number" class="form-control fw-bold text-primary" id="fuelInput" value="16.0" step="0.01">
                     <span class="input-group-text">%</span>
                 </div>
-                <div class="form-text small text-muted" style="font-size:0.75rem">* 系统自动抓取MT文档费率。FedEx-632/超大件自动应用85折。</div>
+                <div class="form-text small text-muted" style="font-size:0.75rem">* 费率可手动修改。FedEx-632/超大件自动应用85折。</div>
             </div>
 
             <div class="row g-2 mb-3">
@@ -287,7 +289,7 @@ HTML_TEMPLATE = r"""
   const DATA = __JSON_DATA__;
   document.getElementById('updateTime').innerText = new Date().toLocaleDateString();
 
-  // --- 1. 邮编显示逻辑 (中英文) ---
+  // --- 1. 邮编显示逻辑 (修复: 正确读取 city/state/cn_state) ---
   document.getElementById('zipCode').addEventListener('input', function() {
     let zip = this.value.trim();
     let display = document.getElementById('locDisplay');
@@ -388,8 +390,6 @@ HTML_TEMPLATE = r"""
   function calcZone(destZip, originZip, chName) {
     if(!destZip || destZip.length < 3) return 8;
     
-    // 优先从邮编库获取 (GOFO)
-    // 简单起见，这里演示基于区域的逻辑
     let d = parseInt(destZip.substring(0,3));
     let region = DATA.warehouses[originZip].region;
 
@@ -440,7 +440,7 @@ HTML_TEMPLATE = r"""
     Object.keys(DATA.channels).forEach(chName => {
       const conf = DATA.channels[chName];
       
-      // 1. 仓库过滤
+      // 1. 仓库过滤 (严格)
       if(!conf.allow_wh.includes(whCode)) return;
 
       // 2. 渠道阻断
@@ -463,12 +463,12 @@ HTML_TEMPLATE = r"""
 
       // 4. 查基础运费
       let priceTable = (DATA.tiers[tier][chName] || {}).prices || [];
-      // 关键：找大于等于计费重的最小报价
+      // 查找逻辑：找到第一个 "重量 >= 计费重" 的行
       let row = priceTable.find(r => r.w >= finalWt - 0.001);
       
       if(!row) return; // 无报价
 
-      // 获取Zone价格 (如 Zone2, Zone3...)，如果该Zone无价格则尝试 Zone8
+      // 获取Zone价格
       let basePrice = row[zone] || row[8] || 0;
       if(basePrice <= 0) return;
 
@@ -526,7 +526,7 @@ HTML_TEMPLATE = r"""
 """
 
 # ==========================================
-# 3. 后端处理逻辑
+# 3. 后端处理逻辑 (Excel 读取核心)
 # ==========================================
 
 def clean_num(val):
@@ -537,59 +537,65 @@ def clean_num(val):
     except:
         return 0.0
 
-def find_csv_path(tier, keywords):
-    """ 精准寻找文件名 """
-    files = os.listdir('.')
-    target = None
-    for f in files:
-        if not f.startswith(f"{tier}.xlsx"): continue
-        if all(k in f for k in keywords):
-            target = f
-            break
-    return target
+def find_sheet_name(xl, keywords, exclude_keywords=None):
+    """ 根据关键词寻找 Sheet 名称 """
+    for sheet in xl.sheet_names:
+        s_upper = sheet.upper().replace(" ", "")
+        # 必须包含所有关键词
+        if not all(k.upper() in s_upper for k in keywords):
+            continue
+        # 必须不包含排除词
+        if exclude_keywords and any(e.upper() in s_upper for e in exclude_keywords):
+            continue
+        return sheet
+    return None
 
-def extract_fuel_rate_from_csv(df):
-    """ 自动抓取 MT 燃油费 """
-    for r in range(min(150, df.shape[0])):
-        for c in range(df.shape[1]):
-            val = str(df.iloc[r, c])
-            if "燃油附加费" in val:
-                # 尝试向右查找数值
-                if c + 1 < df.shape[1]:
-                    rate_val = str(df.iloc[r, c+1]).replace('%', '').strip()
-                    try:
-                        f = float(rate_val)
-                        if f > 1: f = f / 100.0 # 16 -> 0.16
-                        return f
-                    except: pass
+def extract_fuel_rate(xl):
+    """ 扫描所有Sheet寻找'燃油附加费' """
+    for sheet in xl.sheet_names:
+        if "MT" in sheet.upper(): # 仅在MT表里找
+            try:
+                df = pd.read_excel(xl, sheet_name=sheet, header=None)
+                # 扫描前150行
+                for r in range(min(150, df.shape[0])):
+                    for c in range(df.shape[1]):
+                        val = str(df.iloc[r, c])
+                        if "燃油附加费" in val:
+                            if c + 1 < df.shape[1]:
+                                rate_val = str(df.iloc[r, c+1]).replace('%', '').strip()
+                                try:
+                                    f = float(rate_val)
+                                    if f > 1: f = f / 100.0
+                                    return f
+                                except: pass
+            except: pass
     return 0.0
 
-def load_zip_db():
+def load_zip_db(tier_file):
     """ 
-    邮编库加载器 (修复版)
-    能够识别中文表头 '目的地邮编', '省州', '城市'
+    从 T0.xlsx 的 GOFO 报价表中加载邮编库
+    修复：识别中文表头 '目的地邮编'
     """
     db = {}
-    csv_files = [f for f in os.listdir('.') if "GOFO-报价" in f]
-    if not csv_files: return db
+    path = os.path.join(DATA_DIR, tier_file)
+    if not os.path.exists(path): return db
     
     try:
-        # 使用utf-8或gbk读取
-        try:
-            df = pd.read_csv(csv_files[0], header=None, encoding='utf-8')
-        except:
-            df = pd.read_csv(csv_files[0], header=None, encoding='gbk')
-
+        xl = pd.ExcelFile(path)
+        sheet_name = find_sheet_name(xl, ["GOFO", "报价"], ["UNIUNI", "MT"])
+        if not sheet_name: return db
+        
+        df = pd.read_excel(xl, sheet_name=sheet_name, header=None)
+        
         start_row = -1
         zip_col = -1
         city_col = -1
         state_col = -1
         
-        # 扫描前150行找表头
+        # 扫描寻找表头 (增加范围)
         for r in range(150):
             row_vals = [str(x).strip() for x in df.iloc[r].values]
-            # 兼容 "Zip" 或 "目的地邮编"
-            if "目的地邮编" in row_vals or "Zip" in row_vals or "邮编" in row_vals:
+            if "目的地邮编" in row_vals or "Zip" in row_vals:
                 start_row = r
                 for c, v in enumerate(row_vals):
                     if "邮编" in v or "Zip" in v: zip_col = c
@@ -598,6 +604,7 @@ def load_zip_db():
                 break
         
         if start_row != -1 and zip_col != -1:
+            # 提取数据
             for r in range(start_row+1, len(df)):
                 try:
                     z = str(df.iloc[r, zip_col]).split('.')[0].strip().zfill(5)
@@ -618,35 +625,26 @@ def extract_prices(df, split_side=None):
     total_cols = df.shape[1]
     c_start, c_end = 0, total_cols
     
-    # --- 核心修复：精准分栏逻辑 ---
-    # 通过查找 "Weight/重量" 的出现位置来决定分割点
-    # 而不是简单的除以2
+    # 核心修复：智能分栏 (查找两个 '重量' 列的位置)
     weight_indices = []
     for c in range(total_cols):
-        # 扫描前50行找包含 "重量" 的列
         for r in range(50):
             val = str(df.iloc[r, c]).lower()
             if "weight" in val or "重量" in val:
-                if c not in weight_indices:
-                    weight_indices.append(c)
+                if c not in weight_indices: weight_indices.append(c)
                 break
-    
-    # 排序找到的列索引
     weight_indices.sort()
     
     if split_side == 'left':
         if len(weight_indices) > 0:
-            c_start = 0
-            # 如果有第二个表，结束点在第二个表之前；否则全部
             c_end = weight_indices[1] if len(weight_indices) > 1 else total_cols
     elif split_side == 'right':
         if len(weight_indices) > 1:
-            c_start = weight_indices[1] # 从第二个表的起始列开始
-            c_end = total_cols
+            c_start = weight_indices[1]
         else:
-            return [] # 没找到右边的表
+            return [] # 无右侧表
 
-    # 1. 深度扫描表头 (增加到200行)
+    # 1. 深度扫描表头 (200行)
     h_row = -1
     w_col = -1
     z_map = {}
@@ -667,7 +665,7 @@ def extract_prices(df, split_side=None):
         if c >= total_cols: break
         val = str(row_dat[c]).strip().lower()
         if ('weight' in val or '重量' in val) and w_col == -1: w_col = c
-        # 兼容 Zone~2, Zone 2, Zone-2
+        # 兼容 Zone~2, Zone 2
         m = re.search(r'zone[\D]*(\d+)', val)
         if m: z_map[int(m.group(1))] = c
 
@@ -706,50 +704,55 @@ def extract_prices(df, split_side=None):
 def main():
     if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR)
     
-    print("--- Starting Generation (V2026.6) ---")
+    print("--- Starting Generation (Excel Mode) ---")
+    
+    # 加载邮编库 (从T0)
+    zip_db = load_zip_db("T0.xlsx")
     
     final_data = {
         "warehouses": WAREHOUSE_DB,
         "channels": CHANNEL_CONFIG,
-        "zip_db": load_zip_db(),
+        "zip_db": zip_db,
         "us_states_cn": US_STATES_CN,
         "tiers": {}
     }
 
-    for tier in ["T0", "T1", "T2", "T3"]:
+    for tier, filename in TIER_FILES.items():
         print(f"Processing {tier}...")
-        tier_data = {}
+        path = os.path.join(DATA_DIR, filename)
+        if not os.path.exists(path):
+            print(f"  [Warn] File not found: {filename}")
+            continue
         
-        for ch_key, conf in CHANNEL_CONFIG.items():
-            csv_name = find_csv_path(tier, conf["keywords"])
-            if not csv_name: continue
+        tier_data = {}
+        try:
+            xl = pd.ExcelFile(path)
             
-            try:
-                # 尝试读取
-                df = pd.read_csv(csv_name, header=None)
-            except: 
-                print(f"  [Err] Read failed: {csv_name}")
-                continue
-
-            # 提取价格 (传入分栏参数)
-            prices = extract_prices(df, split_side=conf.get("sheet_side"))
+            # 提取该Tier的燃油费 (全局或单表)
+            fuel_rate = extract_fuel_rate(xl)
             
-            # 提取燃油费
-            fuel_rate = 0.0
-            if conf.get("fuel_calc") == "manual":
-                fuel_rate = extract_fuel_rate_from_csv(df)
-            
-            if prices:
-                tier_data[ch_key] = {
-                    "prices": prices,
-                    "fuel_rate": fuel_rate
-                }
-                print(f"  [OK] {ch_key}: {len(prices)} rows")
-            else:
-                print(f"  [Warn] No prices found for {ch_key} (Check split logic)")
+            for ch_key, conf in CHANNEL_CONFIG.items():
+                # 找 Sheet
+                sheet = find_sheet_name(xl, conf["keywords"], conf.get("exclude"))
+                if not sheet: continue
+                
+                df = pd.read_excel(xl, sheet_name=sheet, header=None)
+                
+                # 提取价格
+                prices = extract_prices(df, split_side=conf.get("sheet_side"))
+                
+                if prices:
+                    tier_data[ch_key] = {
+                        "prices": prices,
+                        "fuel_rate": fuel_rate if conf.get("fuel_calc") == "manual" else 0
+                    }
+                    print(f"  [OK] {ch_key}: {len(prices)} rows")
+        except Exception as e:
+            print(f"  [Err] Failed to process {filename}: {e}")
         
         final_data["tiers"][tier] = tier_data
 
+    # 生成文件
     json_str = json.dumps(final_data, ensure_ascii=False).replace("NaN", "0")
     html = HTML_TEMPLATE.replace('__JSON_DATA__', json_str)
     
